@@ -12,15 +12,62 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { TerrainLayer } from '@lts/shared-types';
+import {
+  ERROR_CODES,
+  TerrainError,
+  semanticIndex,
+  type SemanticClass,
+  type TerrainLayer,
+} from '@lts/shared-types';
 import type { TerrainDelta, TerrainOperation } from '@lts/terrain-protocol';
+
+export interface ElevationStats {
+  min: number;
+  max: number;
+  mean: number;
+}
 
 export interface ApplyResult {
   removedVolumeM3: number;
   depositedVolumeM3: number;
   samplesTouched: number;
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number };
+  /** Elevation statistics over the touched samples, before the edit. */
+  elevationBefore: ElevationStats;
+  /** Elevation statistics over the touched samples, after the edit. */
+  elevationAfter: ElevationStats;
+  /**
+   * Present when a spoil pile's requested height exceeded the regolith
+   * angle-of-repose limit and was clamped (spec §11). Reported, never silent.
+   */
+  reposeClamp?: {
+    requestedHeightMeters: number;
+    appliedHeightMeters: number;
+    reposeAngleDeg: number;
+  };
 }
+
+/**
+ * Approximate angle of repose for loose lunar regolith. A conical spoil pile
+ * steeper than this would immediately slump, so requested pile heights are
+ * clamped to radius * tan(repose) and the clamp is reported.
+ */
+const REPOSE_ANGLE_DEG = 35;
+const TAN_REPOSE = Math.tan((REPOSE_ANGLE_DEG * Math.PI) / 180);
+
+/**
+ * Semantic class stamped over the samples a construction operation touches
+ * (spec §11, §22). Only the shape samples are marked — the mass-conserving
+ * redistribution ring is untouched regolith borrowing, not the feature itself.
+ */
+const CONSTRUCTION_SEMANTIC: Partial<Record<TerrainOperation['kind'], SemanticClass>> = {
+  ramp: 'compacted_surface',
+  pad: 'compacted_surface',
+  spoil_pile: 'berm',
+  wheel_track: 'disturbed_regolith',
+  polygonal_cut: 'trench',
+  polygonal_fill: 'berm',
+};
 
 /** Normalised brush weight at distance `d` from the centre. */
 function falloffWeight(d: number, radius: number, exponent: number): number {
@@ -29,30 +76,243 @@ function falloffWeight(d: number, radius: number, exponent: number): number {
   return Math.pow(t, Math.max(0.01, exponent));
 }
 
+/** 1 out to `edge`, then a smooth falloff to 0 across the next `band` metres. */
+function plateauWeight(d: number, edge: number, band: number, exponent: number): number {
+  if (d <= edge) return 1;
+  return falloffWeight(d - edge, band, exponent);
+}
+
+/** Even-odd (ray-casting) point-in-polygon test in the XZ plane. */
+function pointInPolygon(x: number, z: number, poly: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0];
+    const zi = poly[i][1];
+    const xj = poly[j][0];
+    const zj = poly[j][1];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Minimum distance from (x, z) to the polygon's boundary segments. */
+function distanceToPolygonBoundary(x: number, z: number, poly: number[][]): number {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const ax = poly[j][0];
+    const az = poly[j][1];
+    const bx = poly[i][0];
+    const bz = poly[i][1];
+    const ex = bx - ax;
+    const ez = bz - az;
+    const lenSq = ex * ex + ez * ez;
+    const t = lenSq > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / lenSq)) : 0;
+    const d = Math.hypot(x - (ax + t * ex), z - (az + t * ez));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * Validate a polygonal operation's vertices. Runs before the heightfield is
+ * touched, for the same reason numeric parameters are checked in the server:
+ * a malformed polygon must produce a structured error, not a committed NaN.
+ */
+function validatePolygon(op: TerrainOperation): number[][] {
+  const poly = op.polygonXZ;
+  if (!Array.isArray(poly) || poly.length < 3) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      `operation.polygonXZ must be an array of at least 3 [x, z] vertices for '${op.kind}'`,
+      { vertices: Array.isArray(poly) ? poly.length : String(poly) },
+    );
+  }
+  for (let i = 0; i < poly.length; i++) {
+    const v = poly[i];
+    if (
+      !Array.isArray(v) ||
+      v.length !== 2 ||
+      typeof v[0] !== 'number' ||
+      typeof v[1] !== 'number' ||
+      !Number.isFinite(v[0]) ||
+      !Number.isFinite(v[1])
+    ) {
+      throw new TerrainError(
+        ERROR_CODES.INVALID_CONFIG,
+        `operation.polygonXZ[${i}] must be a finite [x, z] pair`,
+        { vertex: String(v) },
+      );
+    }
+  }
+  return poly;
+}
+
+/** A required finite parameter for a construction kind. */
+function requireFinite(v: number | undefined, name: string, kind: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      `operation.${name} is required and must be a finite number for '${kind}'`,
+      { [name]: String(v) },
+    );
+  }
+  return v;
+}
+
 /** Apply one operation to a layer, returning the volumes moved. */
 export function applyOperation(layer: TerrainLayer, op: TerrainOperation): ApplyResult {
   const res = layer.horizontalResolutionMeters;
   const cellArea = res * res;
+
+  // ---- per-kind precomputation: parameters, footprint and validation ------
+  // Heading unit vector: azimuth clockwise from north, north = -Z (ADR 0002).
+  const hdg = ((op.headingDegrees ?? 0) * Math.PI) / 180;
+  const ax = Math.sin(hdg);
+  const az = -Math.cos(hdg);
+
+  // Smooth edge falloff band for ramp/pad plateaus.
+  const edgeBand = Math.max(2 * res, op.radiusMeters * 0.25);
+
+  let polygon: number[][] | null = null;
+  let rampLength = 0;
+  let rampNearElev = 0;
+  let trackHalfLen = 0;
+  let pileHeight = 0;
+  let reposeClamp: ApplyResult['reposeClamp'];
+
+  switch (op.kind) {
+    case 'ramp': {
+      requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
+      rampLength = requireFinite(op.lengthMeters, 'lengthMeters', op.kind);
+      if (rampLength <= 0) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `operation.lengthMeters must be positive for '${op.kind}'`,
+          { lengthMeters: rampLength },
+        );
+      }
+      // The near end keeps the existing grade: capture the pre-edit elevation
+      // at the ramp origin before anything is mutated.
+      const c = Math.max(
+        0,
+        Math.min(layer.widthSamples - 1, Math.round((op.centerXMeters - layer.bounds.minX) / res)),
+      );
+      const r = Math.max(
+        0,
+        Math.min(layer.heightSamples - 1, Math.round((op.centerZMeters - layer.bounds.minZ) / res)),
+      );
+      rampNearElev = layer.heightData[r * layer.widthSamples + c];
+      break;
+    }
+    case 'pad':
+      requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
+      break;
+    case 'spoil_pile': {
+      const requested = Math.abs(op.strengthMeters);
+      const maxHeight = op.radiusMeters * TAN_REPOSE;
+      pileHeight = Math.min(requested, maxHeight);
+      if (requested > maxHeight) {
+        reposeClamp = {
+          requestedHeightMeters: requested,
+          appliedHeightMeters: maxHeight,
+          reposeAngleDeg: REPOSE_ANGLE_DEG,
+        };
+      }
+      break;
+    }
+    case 'wheel_track': {
+      const len = requireFinite(op.lengthMeters, 'lengthMeters', op.kind);
+      if (len <= 0) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `operation.lengthMeters must be positive for '${op.kind}'`,
+          { lengthMeters: len },
+        );
+      }
+      trackHalfLen = len / 2;
+      break;
+    }
+    case 'polygonal_cut':
+    case 'polygonal_fill':
+      polygon = validatePolygon(op);
+      requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
+      break;
+  }
+
   // crater_stamp writes its rim Gaussian out to u = 1.3 (see the profile
   // below), so its bounding box must reach 1.3·radius. With reach = radius the
   // rim survived only in the square bbox corners, producing a four-lobed
   // crater whose rim existed on the diagonals and vanished along the axes.
-  const reach =
-    op.kind === 'trench' || op.kind === 'berm'
-      ? Math.max(op.radiusMeters, (op.lengthMeters ?? 0) / 2 + op.radiusMeters)
-      : op.kind === 'crater_stamp'
-        ? op.radiusMeters * 1.3
-        : op.radiusMeters;
+  const reach = (() => {
+    switch (op.kind) {
+      case 'trench':
+      case 'berm':
+      case 'wheel_track':
+        return Math.max(op.radiusMeters, (op.lengthMeters ?? 0) / 2 + op.radiusMeters);
+      case 'crater_stamp':
+        return op.radiusMeters * 1.3;
+      case 'ramp':
+        // From the near end out to the far end plus its falloff band, in any
+        // direction (conservative; clipped to the layer below).
+        return rampLength + op.radiusMeters + 2 * edgeBand;
+      case 'pad':
+        return Math.max(op.radiusMeters, (op.lengthMeters ?? 0) / 2 + op.radiusMeters) + edgeBand;
+      default:
+        return op.radiusMeters;
+    }
+  })();
 
-  const colMin = Math.max(0, Math.floor((op.centerXMeters - reach - layer.bounds.minX) / res));
+  // World-space influence box: centre ± reach, except polygonal operations,
+  // whose footprint is the polygon's bounding box plus the falloff band.
+  let bboxMinX = op.centerXMeters - reach;
+  let bboxMaxX = op.centerXMeters + reach;
+  let bboxMinZ = op.centerZMeters - reach;
+  let bboxMaxZ = op.centerZMeters + reach;
+  if (polygon) {
+    bboxMinX = Math.min(...polygon.map((v) => v[0])) - op.radiusMeters;
+    bboxMaxX = Math.max(...polygon.map((v) => v[0])) + op.radiusMeters;
+    bboxMinZ = Math.min(...polygon.map((v) => v[1])) - op.radiusMeters;
+    bboxMaxZ = Math.max(...polygon.map((v) => v[1])) + op.radiusMeters;
+  }
+
+  // Mass-conserving redistribution ring: unchanged for the classic brush kinds
+  // (annulus radius…1.6·radius around the centre); construction kinds whose
+  // footprint exceeds the brush radius push the ring out past their reach, and
+  // polygonal operations redistribute around the polygon's bounding circle.
+  let ringCx = op.centerXMeters;
+  let ringCz = op.centerZMeters;
+  let ringInner = op.radiusMeters;
+  switch (op.kind) {
+    case 'ramp':
+    case 'pad':
+    case 'wheel_track':
+      ringInner = reach;
+      break;
+    case 'polygonal_cut':
+    case 'polygonal_fill': {
+      ringCx = (bboxMinX + bboxMaxX) / 2;
+      ringCz = (bboxMinZ + bboxMaxZ) / 2;
+      let maxD = 0;
+      for (const v of polygon!) {
+        const d = Math.hypot(v[0] - ringCx, v[1] - ringCz);
+        if (d > maxD) maxD = d;
+      }
+      ringInner = maxD + op.radiusMeters;
+      break;
+    }
+  }
+
+  const colMin = Math.max(0, Math.floor((bboxMinX - layer.bounds.minX) / res));
   const colMax = Math.min(
     layer.widthSamples - 1,
-    Math.ceil((op.centerXMeters + reach - layer.bounds.minX) / res),
+    Math.ceil((bboxMaxX - layer.bounds.minX) / res),
   );
-  const rowMin = Math.max(0, Math.floor((op.centerZMeters - reach - layer.bounds.minZ) / res));
+  const rowMin = Math.max(0, Math.floor((bboxMinZ - layer.bounds.minZ) / res));
   const rowMax = Math.min(
     layer.heightSamples - 1,
-    Math.ceil((op.centerZMeters + reach - layer.bounds.minZ) / res),
+    Math.ceil((bboxMaxZ - layer.bounds.minZ) / res),
   );
 
   let removed = 0;
@@ -114,11 +374,8 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
         }
         case 'trench':
         case 'berm': {
-          // Distance to the segment centred on (cx, cz) at `headingDegrees`.
-          const hdg = ((op.headingDegrees ?? 0) * Math.PI) / 180;
-          // Azimuth clockwise from north, north = -Z (ADR 0002).
-          const ax = Math.sin(hdg);
-          const az = -Math.cos(hdg);
+          // Distance to the segment centred on (cx, cz) at `headingDegrees`
+          // (heading unit vector precomputed above from ADR 0002).
           const half = (op.lengthMeters ?? 0) / 2;
           const px = x - op.centerXMeters;
           const pz = z - op.centerZMeters;
@@ -130,39 +387,158 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           if (w > 0) dh = (op.kind === 'berm' ? 1 : -1) * Math.abs(op.strengthMeters) * w;
           break;
         }
+        case 'ramp': {
+          // Linear grade from the existing elevation at the near end (the
+          // centre) to targetElevationMeters at the far end, `lengthMeters`
+          // along the heading, half-width `radiusMeters`, with a smooth edge
+          // falloff band so the graded surface meets the surroundings without
+          // a step. The near end ramps its weight in from zero so the
+          // existing grade is genuinely kept there.
+          const px = x - op.centerXMeters;
+          const pz = z - op.centerZMeters;
+          const along = px * ax + pz * az;
+          if (along <= 0 || along >= rampLength + edgeBand) break;
+          const perpX = px - along * ax;
+          const perpZ = pz - along * az;
+          const lat = Math.hypot(perpX, perpZ);
+          const latW = plateauWeight(lat, op.radiusMeters, edgeBand, op.falloff);
+          if (latW <= 0) break;
+          const alongW =
+            along < edgeBand
+              ? falloffWeight(edgeBand - along, edgeBand, op.falloff)
+              : plateauWeight(along, rampLength, edgeBand, op.falloff);
+          const w = latW * alongW;
+          if (w <= 0) break;
+          const t = Math.min(1, along / rampLength);
+          const target = rampNearElev + t * (op.targetElevationMeters! - rampNearElev);
+          dh = (target - layer.heightData[i]) * w;
+          break;
+        }
+        case 'pad': {
+          // Flatten to targetElevationMeters over a circular pad of radius
+          // `radiusMeters`, or a rectangular pad `lengthMeters` long (along
+          // the heading) by 2·radiusMeters wide when a length is given, with
+          // a smooth edge falloff band. Reported as cut AND fill: samples
+          // above the target are removed, samples below are deposited.
+          const px = x - op.centerXMeters;
+          const pz = z - op.centerZMeters;
+          let dOut: number;
+          if ((op.lengthMeters ?? 0) > 0) {
+            const along = px * ax + pz * az;
+            const perpX = px - along * ax;
+            const perpZ = pz - along * az;
+            const lat = Math.hypot(perpX, perpZ);
+            dOut = Math.hypot(
+              Math.max(0, Math.abs(along) - op.lengthMeters! / 2),
+              Math.max(0, lat - op.radiusMeters),
+            );
+          } else {
+            dOut = Math.max(0, Math.hypot(px, pz) - op.radiusMeters);
+          }
+          const w = plateauWeight(dOut, 0, edgeBand, op.falloff);
+          if (w > 0) dh = (op.targetElevationMeters! - layer.heightData[i]) * w;
+          break;
+        }
+        case 'spoil_pile': {
+          // Conical pile, apex height `pileHeight` (repose-clamped above),
+          // base radius `radiusMeters`. Pure deposit.
+          const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
+          if (d < op.radiusMeters && pileHeight > 0) {
+            dh = pileHeight * (1 - d / op.radiusMeters);
+          }
+          break;
+        }
+        case 'wheel_track': {
+          // Two parallel ruts along the heading, centre-to-centre gauge
+          // `radiusMeters`, each rut `0.3·radiusMeters` wide and
+          // `strengthMeters` deep, flanked by raised berms of displaced
+          // material carrying ~40% of the rut cross-section per side.
+          const px = x - op.centerXMeters;
+          const pz = z - op.centerZMeters;
+          const along = px * ax + pz * az;
+          if (Math.abs(along) > trackHalfLen) break;
+          // Signed lateral offset: perpendicular unit vector is (-az, ax).
+          const lat = px * -az + pz * ax;
+          const rutHalfWidth = 0.15 * op.radiusMeters;
+          const bermWidth = rutHalfWidth;
+          const depth = Math.abs(op.strengthMeters);
+          const p = Math.max(0.01, op.falloff);
+          // Rut cross-section area per metre of track for the (1 - d/w)^p
+          // profile; berm height chosen so each side carries 40% of it
+          // (triangular berm profile integrates to bermWidth / 2).
+          const rutArea = (depth * 2 * rutHalfWidth) / (p + 1);
+          const bermHeight = (0.4 * rutArea) / (bermWidth * 0.5);
+          for (const offset of [-op.radiusMeters / 2, op.radiusMeters / 2]) {
+            const dLat = Math.abs(lat - offset);
+            if (dLat < rutHalfWidth) {
+              dh -= depth * falloffWeight(dLat, rutHalfWidth, op.falloff);
+            } else if (dLat < rutHalfWidth + bermWidth) {
+              const u = (dLat - rutHalfWidth) / bermWidth;
+              dh += bermHeight * (1 - Math.abs(2 * u - 1));
+            }
+          }
+          break;
+        }
+        case 'polygonal_cut':
+        case 'polygonal_fill': {
+          // Cut down (or fill up) to targetElevationMeters inside the
+          // polygon, with a falloff band of `radiusMeters` outside the
+          // boundary so the walls meet the surroundings smoothly. A cut never
+          // deposits and a fill never removes: samples already past the
+          // target are left alone.
+          let w: number;
+          if (pointInPolygon(x, z, polygon!)) {
+            w = 1;
+          } else {
+            w = falloffWeight(distanceToPolygonBoundary(x, z, polygon!), op.radiusMeters, op.falloff);
+          }
+          if (w <= 0) break;
+          const raw = op.targetElevationMeters! - layer.heightData[i];
+          if (op.kind === 'polygonal_cut' ? raw < 0 : raw > 0) dh = raw * w;
+          break;
+        }
       }
 
       if (dh !== 0) deltas.set(i, dh);
     }
   }
 
+  // Samples touched by the shape itself, captured before the redistribution
+  // ring is added: these are the samples that get the construction semantic
+  // class, and the ring is borrowing regolith, not part of the feature.
+  const semClass = CONSTRUCTION_SEMANTIC[op.kind];
+  const shapeSamples = semClass ? [...deltas.keys()] : null;
+
   // Pass 2: mass conservation. Redistribute the net volume over the annulus
-  // between radius and 1.6*radius so cut-and-fill balances.
+  // between the footprint radius and 1.6× it so cut-and-fill balances. The
+  // annulus is centred on the brush centre (polygonal operations: on the
+  // polygon's bounding circle) with its inner edge at the operation's reach,
+  // so redistribution never lands inside the feature it is balancing.
   if (op.massConserving) {
     let net = 0;
     for (const dh of deltas.values()) net += dh * cellArea;
 
     if (Math.abs(net) > 0) {
-      const inner = op.radiusMeters;
-      const outer = op.radiusMeters * 1.6;
+      const inner = ringInner;
+      const outer = ringInner * 1.6;
       const ring: number[] = [];
       let ringWeight = 0;
-      const rColMin = Math.max(0, Math.floor((op.centerXMeters - outer - layer.bounds.minX) / res));
+      const rColMin = Math.max(0, Math.floor((ringCx - outer - layer.bounds.minX) / res));
       const rColMax = Math.min(
         layer.widthSamples - 1,
-        Math.ceil((op.centerXMeters + outer - layer.bounds.minX) / res),
+        Math.ceil((ringCx + outer - layer.bounds.minX) / res),
       );
-      const rRowMin = Math.max(0, Math.floor((op.centerZMeters - outer - layer.bounds.minZ) / res));
+      const rRowMin = Math.max(0, Math.floor((ringCz - outer - layer.bounds.minZ) / res));
       const rRowMax = Math.min(
         layer.heightSamples - 1,
-        Math.ceil((op.centerZMeters + outer - layer.bounds.minZ) / res),
+        Math.ceil((ringCz + outer - layer.bounds.minZ) / res),
       );
       const weights = new Map<number, number>();
       for (let row = rRowMin; row <= rRowMax; row++) {
         const z = layer.bounds.minZ + row * res;
         for (let col = rColMin; col <= rColMax; col++) {
           const x = layer.bounds.minX + col * res;
-          const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
+          const d = Math.hypot(x - ringCx, z - ringCz);
           if (d < inner || d > outer) continue;
           const t = 1 - (d - inner) / (outer - inner);
           const w = t * t;
@@ -183,16 +559,32 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     }
   }
 
-  // Pass 3: commit.
+  // Pass 3: commit, with before/after elevation statistics over the touched
+  // samples (the "before" value is recovered as committed - delta, so no
+  // second scan of the heightfield is needed).
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
   let maxZ = -Infinity;
+  let beforeMin = Infinity;
+  let beforeMax = -Infinity;
+  let beforeSum = 0;
+  let afterMin = Infinity;
+  let afterMax = -Infinity;
+  let afterSum = 0;
   for (const [i, dh] of deltas) {
+    const before = layer.heightData[i];
     layer.heightData[i] += dh;
+    const after = layer.heightData[i];
     touched++;
     if (dh < 0) removed += -dh * cellArea;
     else deposited += dh * cellArea;
+    if (before < beforeMin) beforeMin = before;
+    if (before > beforeMax) beforeMax = before;
+    beforeSum += before;
+    if (after < afterMin) afterMin = after;
+    if (after > afterMax) afterMax = after;
+    afterSum += after;
     const col = i % layer.widthSamples;
     const row = (i - col) / layer.widthSamples;
     const x = layer.bounds.minX + col * res;
@@ -203,16 +595,33 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     if (z > maxZ) maxZ = z;
   }
 
+  // Mark the semantic mask over the feature's own samples (spec §11, §22).
+  if (semClass && shapeSamples && layer.masks.semantic) {
+    const classIdx = semanticIndex(semClass);
+    for (const i of shapeSamples) layer.masks.semantic[i] = classIdx;
+  }
+
   return {
     removedVolumeM3: removed,
     depositedVolumeM3: deposited,
     samplesTouched: touched,
     bounds: {
-      minX: touched ? minX : op.centerXMeters,
-      maxX: touched ? maxX : op.centerXMeters,
-      minZ: touched ? minZ : op.centerZMeters,
-      maxZ: touched ? maxZ : op.centerZMeters,
+      minX: touched ? minX : ringCx,
+      maxX: touched ? maxX : ringCx,
+      minZ: touched ? minZ : ringCz,
+      maxZ: touched ? maxZ : ringCz,
     },
+    elevationBefore: {
+      min: touched ? beforeMin : 0,
+      max: touched ? beforeMax : 0,
+      mean: touched ? beforeSum / touched : 0,
+    },
+    elevationAfter: {
+      min: touched ? afterMin : 0,
+      max: touched ? afterMax : 0,
+      mean: touched ? afterSum / touched : 0,
+    },
+    ...(reposeClamp ? { reposeClamp } : {}),
   };
 }
 

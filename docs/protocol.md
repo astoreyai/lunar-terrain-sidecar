@@ -111,7 +111,24 @@ The server holds **one session with one shared dataset** (`Session` in `server.t
 
 Edits are **replayable records**, never mutated meshes (`operations.ts` header; spec §12, §19). `terrain.applyOperation` validates every numeric parameter finite *before* touching the heightfield (a NaN would be committed and surface only much later), applies the operation to the named layer (default: the finest), recomputes vertical bounds, re-seats rocks whose centres fall in the affected bounds (`reseatRocks` in `server.ts` — rocks are instances, not heightfield features), and returns a delta.
 
-`TerrainOperation` fields (`terrain-protocol`): `operationId` (`op-NNNNNN`), `kind` (`raise | lower | smooth | flatten | crater_stamp | trench | berm`), `layerId`, `centerXMeters`, `centerZMeters`, `radiusMeters`, `strengthMeters` (signed magnitude, metres; interpretation depends on `kind`), `falloff` (exponent; 1 linear, 2 smooth), `targetElevationMeters?` (flatten), `headingDegrees?` + `lengthMeters?` (trench/berm), `massConserving?`, `timestamp` (ISO-8601).
+`TerrainOperation` fields (`terrain-protocol`): `operationId` (`op-NNNNNN`), `kind` (table below), `layerId`, `centerXMeters`, `centerZMeters`, `radiusMeters`, `strengthMeters` (signed magnitude, metres; interpretation depends on `kind`), `falloff` (exponent; 1 linear, 2 smooth), `targetElevationMeters?`, `headingDegrees?` + `lengthMeters?`, `polygonXZ?` (polygonal ops: ≥ 3 finite `[x, z]` vertices, world metres), `massConserving?`, `timestamp` (ISO-8601).
+
+Operation kinds:
+
+| Kind | Shape | Parameter use |
+|---|---|---|
+| `raise` / `lower` | radial brush, ±`strengthMeters` at the centre | `radiusMeters`, `falloff` |
+| `smooth` | blend toward the 4-neighbour mean | `strengthMeters` caps the blend factor |
+| `flatten` | pull toward `targetElevationMeters` | weighted by the brush falloff |
+| `crater_stamp` | parabolic cavity + Gaussian rim out to 1.3·radius | `strengthMeters` = depth |
+| `trench` / `berm` | linear cut/heap along a segment centred on the centre | `headingDegrees`, `lengthMeters`, `radiusMeters` = half-width |
+| `ramp` | linear grade from the existing elevation at the centre (near end) to `targetElevationMeters` at the far end, `lengthMeters` along `headingDegrees` | `radiusMeters` = half-width; smooth edge-falloff band |
+| `pad` | flatten to `targetElevationMeters`: circular (radius `radiusMeters`) or, with `lengthMeters`, rectangular `lengthMeters` × 2·`radiusMeters` along `headingDegrees` | reported as cut **and** fill |
+| `spoil_pile` | conical pile, height `strengthMeters`, base radius `radiusMeters` | height clamped to `radius·tan 35°` (regolith angle of repose); the clamp is reported in the result (`reposeClamp`), never silent |
+| `wheel_track` | two parallel ruts along `headingDegrees`, gauge `radiusMeters` (centre-to-centre), rut width 0.3·`radiusMeters`, depth `strengthMeters`, length `lengthMeters` | raised berms beside each rut carry ~40% of the rut cross-section per side (~80% of the removal total) |
+| `polygonal_cut` / `polygonal_fill` | cut down / fill up to `targetElevationMeters` inside `polygonXZ` | point-in-polygon interior; falloff band of `radiusMeters` outside the boundary; a cut never deposits, a fill never removes |
+
+Everything from `trench` down is a **construction feature** (spec §11): applying one also appends a `ConstructionFeature` record (measured mass balance at 1500 kg/m³ bulk density, before/after elevation stats, semantic class) to the dataset's feature manifest, which is exported to `features_construction.json` alongside `craters.json` / `rocks.json`. The six kinds from `ramp` down additionally stamp the semantic mask over the samples they shape (`compacted_surface` for ramp/pad, `berm` for spoil_pile/polygonal_fill, `disturbed_regolith` for wheel_track, `trench` for polygonal_cut); the mass-conserving redistribution ring is left unmarked — it is borrowed regolith, not the feature.
 
 `TerrainDelta` fields: `deltaId` (`delta-NNNNNN`), `sequenceNumber`, `timestamp`, `affectedBounds` `{minX,minZ,maxX,maxZ}`, `changedTiles` (tile ids intersecting the bounds, from `tilesInBounds`), `operations`, `previousChecksum` / `resultingChecksum` (SHA-256 of the layer's raw heightfield bytes, `layerChecksum` — deltas chain), and `massBalance` `{removedVolumeM3, depositedVolumeM3, netVolumeM3, relativeError}`. Mass-conserving mode redeposits the displaced volume in an annulus between `radius` and `1.6×radius`; the residual is **measured and reported**, not assumed zero.
 

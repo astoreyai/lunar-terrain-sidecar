@@ -261,11 +261,20 @@ export function craterProfile(c: CraterParameters, u: number, radiusM: number): 
   return h;
 }
 
+/**
+ * Semantic class indices, resolved once at module load. `craterSemantic` used
+ * to call `SEMANTIC_CLASSES.indexOf` per sample inside the stamping loop; the
+ * indices are constants, so hoisting them changes nothing but the cost.
+ */
+const SEM_CRATER_FLOOR = SEMANTIC_CLASSES.indexOf('crater_floor');
+const SEM_CRATER_WALL = SEMANTIC_CLASSES.indexOf('crater_wall');
+const SEM_CRATER_RIM = SEMANTIC_CLASSES.indexOf('crater_rim');
+
 /** Semantic class for a sample at normalised crater radius `u`. */
 function craterSemantic(c: CraterParameters, u: number): number {
-  if (u <= c.floorRadiusRatio) return SEMANTIC_CLASSES.indexOf('crater_floor');
-  if (u < 0.92) return SEMANTIC_CLASSES.indexOf('crater_wall');
-  if (u <= 1.15) return SEMANTIC_CLASSES.indexOf('crater_rim');
+  if (u <= c.floorRadiusRatio) return SEM_CRATER_FLOOR;
+  if (u < 0.92) return SEM_CRATER_WALL;
+  if (u <= 1.15) return SEM_CRATER_RIM;
   return -1;
 }
 
@@ -278,12 +287,30 @@ export interface StampResult {
 }
 
 /**
+ * Reusable per-column scratch for {@link stampCrater} (single-threaded JS, and
+ * `stampCrater` never re-enters itself, so module-level reuse is safe). Grown
+ * on demand; Float64Array stores the precomputed products as exact doubles.
+ */
+let stampWxCos = new Float64Array(0);
+let stampWxSin = new Float64Array(0);
+
+/**
  * Stamp a crater into a layer's heightfield.
  *
  * Returns the excavated and deposited volumes so the caller can report how
  * closely the cavity and its ejecta balance. They do not balance exactly — the
  * McGetchin blanket is truncated at a finite radius and real impacts vaporise
  * and eject material off the patch — so this is reported rather than enforced.
+ *
+ * Performance note: this is the pipeline's hot path (the `generating_craters`
+ * stage dominates demo-scale generation), so the per-sample loop is written
+ * with every crater-constant subexpression hoisted and `craterProfile` /
+ * `craterSemantic` inlined. Reproducibility invariant: every per-sample
+ * floating-point operation happens with exactly the same operands, in exactly
+ * the same order, as the straightforward form — hoisted values are
+ * subexpressions whose operands do not depend on the sample, so their results
+ * are bit-identical on every iteration (see docs/reproducibility.md; the
+ * output must stay byte-for-byte identical for a given seed).
  */
 export function stampCrater(
   layer: TerrainLayer,
@@ -309,33 +336,107 @@ export function stampCrater(
   const sinR = Math.sin(-c.rotationRadians);
   const cellArea = res * res;
 
+  // ---- Per-crater invariants, hoisted out of the sample loop. Each is the
+  // exact subexpression the loop used to evaluate per sample with operands
+  // that do not vary across samples, so the hoisted result is bit-identical
+  // to what every iteration would have recomputed.
+  const ell = Math.max(1e-6, c.ellipticity);
+  const uMax = reach / radius; // was: u > reach / radius, per sample
+  const depth = c.depthMeters;
+  const negDepth = -depth;
+  const f = c.floorRadiusRatio;
+  const wallDen = 1 - f; // was: (u - f) / (1 - f), per sample
+  const rimH = c.rimHeightMeters;
+  // was: Math.max(1e-6, c.rimWidthMeters / radiusM) per sample — same
+  // division, same operands, every iteration.
+  const rimW = rimH > 0 ? Math.max(1e-6, c.rimWidthMeters / radius) : 1;
+  const ejectaAmp = c.ejectaAmplitudeMeters;
+  // was (per sample, via mcgetchinEjectaThickness + ejectaRimThickness):
+  //   rimThickness = 0.14 * Math.pow(radiusM, 0.74)          — two pow() calls
+  //   scale = c.ejectaAmplitudeMeters / Math.max(1e-12, rimThickness)
+  // Both depend only on the crater, so one evaluation is exact.
+  const ejectaRimT = 0.14 * Math.pow(radius, 0.74);
+  const ejectaScale = ejectaAmp / Math.max(1e-12, ejectaRimT);
+
+  const heightData = layer.heightData;
+  const widthSamples = layer.widthSamples;
+  const minX = layer.bounds.minX;
+  const minZ = layer.bounds.minZ;
+  const cx = c.centerXMeters;
+  const cz = c.centerZMeters;
+
+  // ---- Per-column precompute. wx and its two rotation products depend only
+  // on the column, not the row; computing them once per crater instead of
+  // once per (row, col) repeats the exact same operations with the exact same
+  // operands, so every stored double is bit-identical to the in-loop value.
+  const nCols = colMax - colMin + 1;
+  if (nCols > 0 && nCols > stampWxCos.length) {
+    stampWxCos = new Float64Array(nCols);
+    stampWxSin = new Float64Array(nCols);
+  }
+  for (let col = colMin; col <= colMax; col++) {
+    const wx = minX + col * res - cx;
+    stampWxCos[col - colMin] = wx * cosR;
+    stampWxSin[col - colMin] = wx * sinR;
+  }
+
   let excavated = 0;
   let deposited = 0;
   let touched = 0;
 
   for (let row = rowMin; row <= rowMax; row++) {
-    const wz = layer.bounds.minZ + row * res - c.centerZMeters;
+    const wz = minZ + row * res - cz;
+    const wzSin = wz * sinR;
+    const wzCos = wz * cosR;
+    const rowBase = row * widthSamples;
     for (let col = colMin; col <= colMax; col++) {
-      const wx = layer.bounds.minX + col * res - c.centerXMeters;
+      const k = col - colMin;
 
       // Rotate into the crater's frame and squash the minor axis.
-      const rx = wx * cosR - wz * sinR;
-      const rz = (wx * sinR + wz * cosR) / Math.max(1e-6, c.ellipticity);
+      // rx = wx * cosR - wz * sinR; rz = (wx * sinR + wz * cosR) / ell —
+      // identical operation sequence, products precomputed per column/row.
+      const rx = stampWxCos[k] - wzSin;
+      const rz = (stampWxSin[k] + wzCos) / ell;
       const u = Math.hypot(rx, rz) / radius;
-      if (u > reach / radius) continue;
+      if (u > uMax) continue;
 
-      const dh = craterProfile(c, u, radius);
+      // ---- craterProfile(c, u, radius), inlined with hoisted invariants.
+      let dh = 0;
+      if (u < 1) {
+        if (u <= f) {
+          dh = negDepth;
+        } else {
+          const t = (u - f) / wallDen;
+          dh = negDepth * (1 - t * t);
+        }
+      }
+      if (rimH > 0) {
+        const d = (u - 1) / rimW;
+        dh += rimH * Math.exp(-d * d);
+      }
+      if (u > 1 && ejectaAmp > 0) {
+        const r = u * radius;
+        // mcgetchinEjectaThickness(radius, r) with the rim thickness hoisted;
+        // the r < radius branch returned 0, and adding 0 * scale (= +0) to a
+        // non-negative dh left it unchanged, so the zero branch is skipped.
+        if (r >= radius) {
+          dh += ejectaRimT * Math.pow(r / radius, -3) * ejectaScale;
+        }
+      }
+
       if (dh === 0) continue;
 
-      const i = row * layer.widthSamples + col;
-      layer.heightData[i] += dh;
+      const i = rowBase + col;
+      heightData[i] += dh;
       touched++;
       if (dh < 0) excavated += -dh * cellArea;
       else deposited += dh * cellArea;
 
       if (semantic) {
-        const s = craterSemantic(c, u);
-        if (s >= 0) semantic[i] = s;
+        // craterSemantic(c, u), inlined.
+        if (u <= f) semantic[i] = SEM_CRATER_FLOOR;
+        else if (u < 0.92) semantic[i] = SEM_CRATER_WALL;
+        else if (u <= 1.15) semantic[i] = SEM_CRATER_RIM;
       }
     }
   }

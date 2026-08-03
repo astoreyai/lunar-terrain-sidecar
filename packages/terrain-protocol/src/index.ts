@@ -100,7 +100,16 @@ export type OperationKind =
   | 'flatten'
   | 'crater_stamp'
   | 'trench'
-  | 'berm';
+  | 'berm'
+  // Construction features (spec §11). Each application is also recorded as a
+  // ConstructionFeature in the dataset's feature manifest with its measured
+  // mass balance.
+  | 'ramp'
+  | 'pad'
+  | 'spoil_pile'
+  | 'wheel_track'
+  | 'polygonal_cut'
+  | 'polygonal_fill';
 
 export interface TerrainOperation {
   operationId: string;
@@ -110,16 +119,26 @@ export interface TerrainOperation {
   /** Centre in local metres. */
   centerXMeters: number;
   centerZMeters: number;
+  /**
+   * Brush radius, metres. Reused per kind: ramp/pad half-width, spoil-pile
+   * base radius, wheel-track gauge (rut centre-to-centre), and the boundary
+   * falloff band width for polygonal_cut / polygonal_fill.
+   */
   radiusMeters: number;
   /** Signed magnitude, metres. Interpretation depends on `kind`. */
   strengthMeters: number;
   /** Falloff exponent; 1 is linear, 2 is smooth. */
   falloff: number;
-  /** Target elevation for `flatten`, metres. */
+  /** Target elevation for `flatten`, `pad`, ramp far end, and polygonal ops. */
   targetElevationMeters?: number;
-  /** For trench/berm: direction and length. */
+  /** For trench/berm/ramp/pad/wheel_track: direction and length. */
   headingDegrees?: number;
   lengthMeters?: number;
+  /**
+   * For polygonal_cut / polygonal_fill: the polygon as [x, z] vertices in
+   * world metres. At least 3 finite vertices; the closing edge is implicit.
+   */
+  polygonXZ?: number[][];
   /** Conserve volume by redistributing the displaced material. */
   massConserving?: boolean;
   /** ISO-8601 instant the operation was recorded. */

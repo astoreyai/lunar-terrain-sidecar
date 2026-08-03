@@ -24,6 +24,7 @@ import {
   slopeDegAtWorld,
   recomputeVerticalBounds,
   SEMANTIC_CLASSES,
+  type ConstructionFeature,
   type TerrainDataset,
   type TerrainLayer,
   type RockFeature,
@@ -260,7 +261,21 @@ async function handle(
           exportFormats: ['rf32', 'exr', 'png16', 'npy', 'glb', 'json'],
           // Declared honestly: exactly the operations that are implemented.
           // Anything absent returns a structured error, never a silent no-op.
-          operations: ['raise', 'lower', 'smooth', 'flatten', 'crater_stamp', 'trench', 'berm'],
+          operations: [
+            'raise',
+            'lower',
+            'smooth',
+            'flatten',
+            'crater_stamp',
+            'trench',
+            'berm',
+            'ramp',
+            'pad',
+            'spoil_pile',
+            'wheel_track',
+            'polygonal_cut',
+            'polygonal_fill',
+          ],
           craterModels: ['production_csfd', 'power_law'],
           rockModels: ['golombek_sfd', 'power_law'],
           noiseModels: ['fbm', 'ridged', 'warped_fbm'],
@@ -526,6 +541,9 @@ async function handle(
           targetElevationMeters: finiteOpt(opInput.targetElevationMeters, 'targetElevationMeters'),
           headingDegrees: finiteOpt(opInput.headingDegrees, 'headingDegrees'),
           lengthMeters: finiteOpt(opInput.lengthMeters, 'lengthMeters'),
+          // Validated structurally (>= 3 finite [x, z] vertices) inside
+          // applyOperation, before the heightfield is touched.
+          ...(opInput.polygonXZ !== undefined ? { polygonXZ: opInput.polygonXZ } : {}),
           massConserving: opInput.massConserving ?? false,
           timestamp: new Date().toISOString(),
         };
@@ -558,7 +576,77 @@ async function handle(
         );
         session.deltas.push(delta);
         session.operationLog.push(op);
-        return ok(req.id, { delta, operation: op, rocksReseated: reseated });
+
+        // Construction kinds (spec §11) — everything except the plain
+        // sculpting brushes — are additionally recorded in the feature
+        // manifest with their measured mass balance, so the export carries an
+        // auditable record of every engineered feature.
+        const constructionSemantic: Partial<Record<TerrainOperation['kind'], string>> = {
+          trench: 'trench',
+          berm: 'berm',
+          ramp: 'compacted_surface',
+          pad: 'compacted_surface',
+          spoil_pile: 'berm',
+          wheel_track: 'disturbed_regolith',
+          polygonal_cut: 'trench',
+          polygonal_fill: 'berm',
+        };
+        const semanticClass = constructionSemantic[op.kind];
+        if (semanticClass !== undefined) {
+          const bulkDensityKgM3 = 1500;
+          const parameters: ConstructionFeature['parameters'] = {
+            centerXMeters: op.centerXMeters,
+            centerZMeters: op.centerZMeters,
+            radiusMeters: op.radiusMeters,
+            strengthMeters: op.strengthMeters,
+            falloff: op.falloff,
+            massConserving: op.massConserving ?? false,
+            ...(op.targetElevationMeters !== undefined
+              ? { targetElevationMeters: op.targetElevationMeters }
+              : {}),
+            ...(op.headingDegrees !== undefined ? { headingDegrees: op.headingDegrees } : {}),
+            ...(op.lengthMeters !== undefined ? { lengthMeters: op.lengthMeters } : {}),
+            // Flattened [x0, z0, x1, z1, ...] because feature parameters are
+            // scalars and flat arrays only.
+            ...(op.polygonXZ !== undefined
+              ? { polygonXZFlat: op.polygonXZ.flat(), polygonVertexCount: op.polygonXZ.length }
+              : {}),
+            ...(result.reposeClamp !== undefined
+              ? {
+                  reposeClampApplied: true,
+                  requestedHeightMeters: result.reposeClamp.requestedHeightMeters,
+                  appliedHeightMeters: result.reposeClamp.appliedHeightMeters,
+                  reposeAngleDeg: result.reposeClamp.reposeAngleDeg,
+                }
+              : {}),
+          };
+          const feature: ConstructionFeature = {
+            id: `construction-${op.operationId}`,
+            kind: op.kind as ConstructionFeature['kind'],
+            appliedToLayers: [layer.id],
+            affectedBounds: result.bounds,
+            parameters,
+            massBalance: {
+              removedVolumeM3: delta.massBalance.removedVolumeM3,
+              depositedVolumeM3: delta.massBalance.depositedVolumeM3,
+              netVolumeM3: delta.massBalance.netVolumeM3,
+              relativeError: delta.massBalance.relativeError,
+              bulkDensityKgM3,
+              netMassKg: delta.massBalance.netVolumeM3 * bulkDensityKgM3,
+            },
+            elevationBefore: result.elevationBefore,
+            elevationAfter: result.elevationAfter,
+            semanticClass,
+          };
+          dataset.featureManifest.push(feature);
+        }
+
+        return ok(req.id, {
+          delta,
+          operation: op,
+          rocksReseated: reseated,
+          ...(result.reposeClamp !== undefined ? { reposeClamp: result.reposeClamp } : {}),
+        });
       }
 
       case 'terrain.getTile': {

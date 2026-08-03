@@ -13,6 +13,7 @@ import { dirname, join, relative } from 'node:path';
 import {
   ERROR_CODES,
   TerrainError,
+  isConstruction,
   isCrater,
   isRock,
   SEMANTIC_CLASSES,
@@ -215,6 +216,7 @@ export function exportTerrain(dataset: TerrainDataset, opts: ExportOptions): Exp
   // ----------------------------------------------------------- manifests --
   const craters = dataset.featureManifest.filter(isCrater);
   const rocks = dataset.featureManifest.filter(isRock);
+  const construction = dataset.featureManifest.filter(isConstruction);
 
   artifacts.push(
     emit(
@@ -274,6 +276,41 @@ export function exportTerrain(dataset: TerrainDataset, opts: ExportOptions): Exp
         ),
       ),
       'rock_manifest',
+    ),
+  );
+
+  artifacts.push(
+    emit(
+      root,
+      'features_construction.json',
+      Buffer.from(
+        JSON.stringify(
+          {
+            schemaVersion: dataset.provenance.generator.schemaVersion,
+            terrainId: dataset.id,
+            count: construction.length,
+            units: 'meters',
+            note:
+              'Engineering features (spec §11) applied as terrain edit operations. Volumes are ' +
+              'measured from the heightfield delta, not assumed; net mass uses the recorded ' +
+              'bulk density.',
+            features: construction.map((f) => ({
+              id: f.id,
+              kind: f.kind,
+              layers: f.appliedToLayers,
+              affected_bounds: f.affectedBounds,
+              parameters: f.parameters,
+              mass_balance: f.massBalance,
+              elevation_before: f.elevationBefore,
+              elevation_after: f.elevationAfter,
+              semantic_class: f.semanticClass,
+            })),
+          },
+          null,
+          2,
+        ),
+      ),
+      'construction_manifest',
     ),
   );
 
@@ -345,6 +382,7 @@ export function exportTerrain(dataset: TerrainDataset, opts: ExportOptions): Exp
       craters: craters.length,
       rocks: rocks.length,
       physical_rocks: rocks.filter((r) => r.physical).length,
+      construction: construction.length,
     },
     provenance: dataset.provenance,
     notes: opts.notes ?? [],

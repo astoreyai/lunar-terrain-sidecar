@@ -119,10 +119,10 @@ All numbers below were produced by the commands in this README on this machine
 | layers | 1 km @ 2 m, 200 m @ 0.2 m, 30 m @ 0.01 m |
 | samples | 10,259,003 |
 | craters / rocks | 8,023 / 6,409 |
-| artifacts | 182 files, 625.9 MB |
-| generate / export | 16.3 s / 2.8 s |
+| artifacts | 183 files, 625.9 MB |
+| generate / export | 5.7 s / 1.7 s |
 | validation | 26 checks, 0 errors |
-| reproducibility | **182/182 artifacts byte-identical** |
+| reproducibility | **183/183 artifacts byte-identical** |
 
 Rock count and timing rose from the first release: the Golombek rim-excess fix
 stopped dividing the calibrated background density by 4, so the same k = 0.05
@@ -152,7 +152,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 147 tests, 7 files, all passing.
+**Test suite**: 167 tests, 8 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
