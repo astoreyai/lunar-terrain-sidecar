@@ -115,10 +115,27 @@
               <button type="button" data-brush="trench">trench</button>
               <button type="button" data-brush="berm">berm</button>
             </div>
+            <h2>Construction</h2>
+            <div id="construction-buttons" class="chips">
+              <button type="button" data-brush="ramp">ramp</button>
+              <button type="button" data-brush="pad">pad</button>
+              <button type="button" data-brush="spoil_pile">spoil pile</button>
+              <button type="button" data-brush="wheel_track">wheel track</button>
+              <button type="button" data-brush="polygonal_cut">poly cut</button>
+              <button type="button" data-brush="polygonal_fill">poly fill</button>
+            </div>
             <label>Radius m<input id="brush-radius" type="number" step="0.1" value="2" /></label>
             <label>Strength m<input id="brush-strength" type="number" step="0.05" value="0.3" /></label>
             <label>Falloff<input id="brush-falloff" type="number" step="0.1" value="2" /></label>
             <label class="check"><input id="brush-mass-conserving" type="checkbox" /> Mass conserving (cut = fill)</label>
+            <label id="param-heading" hidden>Heading °<input id="brush-heading" type="number" step="1" value="0" /></label>
+            <label id="param-length" hidden>Length m<input id="brush-length" type="number" step="0.5" value="10" /></label>
+            <label id="param-target-auto" class="check" hidden><input id="brush-target-auto" type="checkbox" checked /> Auto target (surface height at click)</label>
+            <label id="param-target" hidden>Target elevation m<input id="brush-target" type="number" step="0.05" value="0" /></label>
+            <div id="polygon-controls" class="row" hidden>
+              <button id="btn-polygon-apply" type="button">Apply polygon</button>
+              <button id="btn-polygon-clear" type="button">Clear</button>
+            </div>
             <div class="row">
               <button id="btn-undo" type="button">Undo</button>
               <button id="btn-redo" type="button">Redo</button>

@@ -355,6 +355,85 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     expect(real).toEqual([]);
   });
 
+  it('renders the construction brush chips', async () => {
+    for (const kind of [
+      'ramp',
+      'pad',
+      'spoil_pile',
+      'wheel_track',
+      'polygonal_cut',
+      'polygonal_fill',
+    ]) {
+      expect(
+        await isVisible(page, `#construction-buttons button[data-brush="${kind}"]`),
+        kind,
+      ).toBe(true);
+    }
+  });
+
+  it('applies a spoil pile and reports the repose clamp', async () => {
+    await page.click('#construction-buttons button[data-brush="spoil_pile"]');
+    await waitForClass(
+      page,
+      '#construction-buttons button[data-brush="spoil_pile"]',
+      'active',
+      5_000,
+    );
+    await page.uncheck('#brush-mass-conserving');
+    // A 5 m pile on a 2 m base demands a 68 deg cone — far past the 35 deg
+    // regolith angle of repose, so the server must clamp and say so.
+    await page.fill('#brush-radius', '2');
+    await page.fill('#brush-strength', '5');
+
+    const box = (await page.locator('#canvas').boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+    await waitForText(page, '#edit-status', 'repose', 120_000);
+    const status = await textOf(page, '#edit-status');
+    expect(status).toMatch(/delta-\d+/);
+    // 2 m * tan(35 deg) = 1.400 m.
+    expect(status).toContain('height clamped to 1.400 m by 35 deg repose');
+  }, 200_000);
+
+  it('collects polygon vertices and applies a polygonal cut', async () => {
+    await page.click('#construction-buttons button[data-brush="polygonal_cut"]');
+    await waitForClass(
+      page,
+      '#construction-buttons button[data-brush="polygonal_cut"]',
+      'active',
+      5_000,
+    );
+    const box = (await page.locator('#canvas').boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    // Clicks in polygon mode add vertices instead of applying a brush.
+    await page.mouse.click(cx - 60, cy - 40);
+    await waitForText(page, '#edit-status', 'polygon: 1 vertices', 10_000);
+    await page.mouse.click(cx + 60, cy - 40);
+    await waitForText(page, '#edit-status', 'polygon: 2 vertices', 10_000);
+    await page.mouse.click(cx, cy + 50);
+    await waitForText(page, '#edit-status', 'polygon: 3 vertices', 10_000);
+
+    await page.click('#btn-polygon-apply');
+    await waitForText(page, '#edit-status', 'delta-', 120_000);
+    const status = await textOf(page, '#edit-status');
+    expect(status).toMatch(/delta-\d+/);
+    expect(status).toMatch(/cut \d+\.\d+ m³/);
+  }, 200_000);
+
+  it('refuses to undo a construction operation with the honest message', async () => {
+    // The last applied operation is the polygonal_cut above; its pre-edit
+    // surface is destroyed, so undo must refuse rather than guess.
+    await page.click('#btn-undo');
+    await waitForText(page, '#edit-status', 'not invertible', 10_000);
+    expect(await textOf(page, '#edit-status')).toContain("cannot undo 'polygonal_cut'");
+  });
+
+  it('captures the construction screenshot', async () => {
+    await page.screenshot({ path: join(SHOTS, '06-construction.png') });
+    expect(existsSync(join(SHOTS, '06-construction.png'))).toBe(true);
+  });
+
   it('writes screenshots for visual inspection', () => {
     for (const name of [
       '01-lit-terrain.png',
@@ -364,6 +443,7 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
       '03-rover-view.png',
       '04-topdown.png',
       '05-after-edit.png',
+      '06-construction.png',
     ]) {
       expect(existsSync(join(SHOTS, name))).toBe(true);
     }

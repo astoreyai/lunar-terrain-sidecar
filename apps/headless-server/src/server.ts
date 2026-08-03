@@ -212,7 +212,11 @@ function reseatRocks(
     const ground = elevationAt(dataset, x, z);
     if (!Number.isFinite(ground)) continue;
     const y = ground + rock.scale.y * (1 - 2 * rock.buriedFraction);
-    if (y !== rock.position.y) {
+    // DOWNWARD ONLY. Excavating under a rock drops it; but material dumped
+    // ON TOP of a rock (a spoil pile, a berm, a polygonal fill) buries it —
+    // it must not levitate to ride the new surface at its old burial
+    // fraction. A buried rock keeps its position and simply ends up deeper.
+    if (y < rock.position.y) {
       rock.position.y = y;
       moved++;
     }
@@ -611,6 +615,9 @@ async function handle(
             ...(op.polygonXZ !== undefined
               ? { polygonXZFlat: op.polygonXZ.flat(), polygonVertexCount: op.polygonXZ.length }
               : {}),
+            ...(result.aliasingWarning !== undefined
+              ? { aliasingWarning: result.aliasingWarning }
+              : {}),
             ...(result.reposeClamp !== undefined
               ? {
                   reposeClampApplied: true,
@@ -624,7 +631,10 @@ async function handle(
             id: `construction-${op.operationId}`,
             kind: op.kind as ConstructionFeature['kind'],
             appliedToLayers: [layer.id],
-            affectedBounds: result.bounds,
+            // Footprint only — the delta's affectedBounds (below) still
+            // covers the borrow ring for tile invalidation, but the FEATURE
+            // is its geometry, not the ring it borrowed regolith from.
+            affectedBounds: result.featureBounds ?? result.bounds,
             parameters,
             massBalance: {
               removedVolumeM3: delta.massBalance.removedVolumeM3,
@@ -634,8 +644,8 @@ async function handle(
               bulkDensityKgM3,
               netMassKg: delta.massBalance.netVolumeM3 * bulkDensityKgM3,
             },
-            elevationBefore: result.elevationBefore,
-            elevationAfter: result.elevationAfter,
+            elevationBefore: result.featureElevationBefore ?? result.elevationBefore,
+            elevationAfter: result.featureElevationAfter ?? result.elevationAfter,
             semanticClass,
           };
           dataset.featureManifest.push(feature);
@@ -646,6 +656,9 @@ async function handle(
           operation: op,
           rocksReseated: reseated,
           ...(result.reposeClamp !== undefined ? { reposeClamp: result.reposeClamp } : {}),
+          ...(result.aliasingWarning !== undefined
+            ? { aliasingWarning: result.aliasingWarning }
+            : {}),
         });
       }
 

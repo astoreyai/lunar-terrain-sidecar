@@ -63,6 +63,7 @@ export class Viewer {
   private terrainGroup = new THREE.Group();
   private rockGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
+  private polygonGroup = new THREE.Group();
 
   /**
    * Dispose every geometry and material under a group, then clear it.
@@ -135,6 +136,7 @@ export class Viewer {
     this.scene.add(this.terrainGroup);
     this.scene.add(this.rockGroup);
     this.scene.add(this.helperGroup);
+    this.scene.add(this.polygonGroup);
 
     this.controls = new OrbitControls(this.perspective, canvas);
     this.controls.enableDamping = true;
@@ -568,6 +570,26 @@ export class Viewer {
       best.heights[r1 * W + c0] * (1 - tc) * tr +
       best.heights[r1 * W + c1] * tc * tr
     );
+  }
+
+  /**
+   * Show the in-progress polygon for polygonal_cut/polygonal_fill as a line
+   * draped just above the surface. Replaces any previous preview; closes the
+   * loop once three or more vertices exist.
+   */
+  addPolygonPreview(verticesXZ: Array<[number, number]>): void {
+    Viewer.disposeGroup(this.polygonGroup);
+    if (verticesXZ.length === 0) return;
+    const points = verticesXZ.map(
+      ([x, z]) => new THREE.Vector3(x, this.surfaceHeightAt(x, z) + 0.05, z),
+    );
+    if (verticesXZ.length >= 3) points.push(points[0].clone());
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    this.polygonGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffc400 })));
+  }
+
+  clearPolygonPreview(): void {
+    Viewer.disposeGroup(this.polygonGroup);
   }
 
   /** Ray-pick the terrain under a normalised device coordinate. */

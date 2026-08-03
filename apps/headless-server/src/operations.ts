@@ -37,6 +37,22 @@ export interface ApplyResult {
   /** Elevation statistics over the touched samples, after the edit. */
   elevationAfter: ElevationStats;
   /**
+   * Footprint-scoped bounds and elevation statistics for construction kinds:
+   * the feature's own geometry, EXCLUDING the mass-conserving borrow ring.
+   * `bounds`/`elevationBefore`/`elevationAfter` above cover every changed
+   * sample (ring included) because tile invalidation needs them; a feature
+   * record must use these instead or it claims the ring as part of itself.
+   */
+  featureBounds?: { minX: number; minZ: number; maxX: number; maxZ: number };
+  featureElevationBefore?: ElevationStats;
+  featureElevationAfter?: ElevationStats;
+  /**
+   * Present when the feature geometry is narrower than the sample grid can
+   * represent (wheel-track ruts below one cell wide): recorded volumes are
+   * then dominated by grid aliasing, not geometry.
+   */
+  aliasingWarning?: string;
+  /**
    * Present when a spoil pile's requested height exceeded the regolith
    * angle-of-repose limit and was clamped (spec §11). Reported, never silent.
    */
@@ -175,6 +191,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
   // Smooth edge falloff band for ramp/pad plateaus.
   const edgeBand = Math.max(2 * res, op.radiusMeters * 0.25);
 
+  let aliasingWarning: string | undefined;
   let polygon: number[][] | null = null;
   let rampLength = 0;
   let rampNearElev = 0;
@@ -223,6 +240,16 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       break;
     }
     case 'wheel_track': {
+      // Ruts are 0.3*gauge wide; below one grid cell they cannot be resolved
+      // and the recorded volumes measure aliasing, not geometry (measured:
+      // 2.5x volume inflation at 0.5 m grid for a 2 m gauge). Warn, honestly.
+      const rutWidth = 2 * 0.15 * op.radiusMeters;
+      if (rutWidth < res) {
+        aliasingWarning =
+          `wheel_track rut width ${rutWidth.toFixed(2)} m is narrower than the ` +
+          `${res} m sample grid; recorded volumes are grid-aliasing artifacts. ` +
+          `Use a layer with resolution <= ${(rutWidth / 2).toFixed(2)} m for meaningful volumes.`;
+      }
       const len = requireFinite(op.lengthMeters, 'lengthMeters', op.kind);
       if (len <= 0) {
         throw new TerrainError(
@@ -288,6 +315,12 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     case 'ramp':
     case 'pad':
     case 'wheel_track':
+    // trench and berm are exactly as elongated (reach = length/2 + radius)
+    // and were the one pair left on ringInner = radius: a mass-conserving
+    // 20 m trench redeposited half its excavated volume back INSIDE its own
+    // footprint, raising the trench floor 3.3x the trench's depth.
+    case 'trench':
+    case 'berm':
       ringInner = reach;
       break;
     case 'polygonal_cut':
@@ -321,6 +354,16 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
 
   // Pass 1: compute the intended delta for every sample in reach.
   const deltas = new Map<number, number>();
+
+  /**
+   * Samples inside the feature's own footprint, tracked from the GEOMETRY,
+   * not from `dh !== 0`. The distinction matters: a pad over ground already
+   * at target moves no earth, but it is still a pad — keying the semantic
+   * mask and the feature record on nonzero deltas recorded "no feature" for
+   * exactly the samples where grading was unnecessary, and marked the
+   * polygonal falloff band (outside the polygon) as if it were the feature.
+   */
+  const shapeSet: Set<number> | null = CONSTRUCTION_SEMANTIC[op.kind] ? new Set() : null;
 
   for (let row = rowMin; row <= rowMax; row++) {
     const z = layer.bounds.minZ + row * res;
@@ -403,6 +446,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           const lat = Math.hypot(perpX, perpZ);
           const latW = plateauWeight(lat, op.radiusMeters, edgeBand, op.falloff);
           if (latW <= 0) break;
+          if (along <= rampLength && lat <= op.radiusMeters + edgeBand) shapeSet?.add(i);
           const alongW =
             along < edgeBand
               ? falloffWeight(edgeBand - along, edgeBand, op.falloff)
@@ -436,7 +480,10 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
             dOut = Math.max(0, Math.hypot(px, pz) - op.radiusMeters);
           }
           const w = plateauWeight(dOut, 0, edgeBand, op.falloff);
-          if (w > 0) dh = (op.targetElevationMeters! - layer.heightData[i]) * w;
+          if (w > 0) {
+            shapeSet?.add(i);
+            dh = (op.targetElevationMeters! - layer.heightData[i]) * w;
+          }
           break;
         }
         case 'spoil_pile': {
@@ -444,6 +491,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           // base radius `radiusMeters`. Pure deposit.
           const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
           if (d < op.radiusMeters && pileHeight > 0) {
+            shapeSet?.add(i);
             dh = pileHeight * (1 - d / op.radiusMeters);
           }
           break;
@@ -471,8 +519,10 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           for (const offset of [-op.radiusMeters / 2, op.radiusMeters / 2]) {
             const dLat = Math.abs(lat - offset);
             if (dLat < rutHalfWidth) {
+              shapeSet?.add(i);
               dh -= depth * falloffWeight(dLat, rutHalfWidth, op.falloff);
             } else if (dLat < rutHalfWidth + bermWidth) {
+              shapeSet?.add(i);
               const u = (dLat - rutHalfWidth) / bermWidth;
               dh += bermHeight * (1 - Math.abs(2 * u - 1));
             }
@@ -488,6 +538,9 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           // target are left alone.
           let w: number;
           if (pointInPolygon(x, z, polygon!)) {
+            // Only the polygon interior IS the feature; the falloff band is
+            // the wall meeting the surroundings, not more trench/berm.
+            shapeSet?.add(i);
             w = 1;
           } else {
             w = falloffWeight(distanceToPolygonBoundary(x, z, polygon!), op.radiusMeters, op.falloff);
@@ -503,11 +556,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     }
   }
 
-  // Samples touched by the shape itself, captured before the redistribution
-  // ring is added: these are the samples that get the construction semantic
-  // class, and the ring is borrowing regolith, not part of the feature.
   const semClass = CONSTRUCTION_SEMANTIC[op.kind];
-  const shapeSamples = semClass ? [...deltas.keys()] : null;
 
   // Pass 2: mass conservation. Redistribute the net volume over the annulus
   // between the footprint radius and 1.6× it so cut-and-fill balances. The
@@ -595,10 +644,54 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     if (z > maxZ) maxZ = z;
   }
 
-  // Mark the semantic mask over the feature's own samples (spec §11, §22).
-  if (semClass && shapeSamples && layer.masks.semantic) {
+  // Mark the semantic mask over the feature's own samples (spec §11, §22) —
+  // the geometric footprint, including samples where no earth moved.
+  if (semClass && shapeSet && layer.masks.semantic) {
     const classIdx = semanticIndex(semClass);
-    for (const i of shapeSamples) layer.masks.semantic[i] = classIdx;
+    for (const i of shapeSet) layer.masks.semantic[i] = classIdx;
+  }
+
+  // Feature-scoped bounds and elevation statistics, over the footprint only.
+  // The delta-based `bounds` above deliberately still includes the borrow
+  // ring — tile invalidation must cover everything that changed — but the
+  // FEATURE record must not claim the ring: a spoil pile's record previously
+  // reported terrain below original grade (the ring borrow pits) as part of
+  // the pile.
+  let featureBounds: ApplyResult['bounds'] | undefined;
+  let featureBefore: ElevationStats | undefined;
+  let featureAfter: ElevationStats | undefined;
+  if (shapeSet && shapeSet.size > 0) {
+    let fMinX = Infinity;
+    let fMaxX = -Infinity;
+    let fMinZ = Infinity;
+    let fMaxZ = -Infinity;
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    let bSum = 0;
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    let aSum = 0;
+    for (const i of shapeSet) {
+      const after = layer.heightData[i];
+      const before = after - (deltas.get(i) ?? 0);
+      if (before < bMin) bMin = before;
+      if (before > bMax) bMax = before;
+      bSum += before;
+      if (after < aMin) aMin = after;
+      if (after > aMax) aMax = after;
+      aSum += after;
+      const col = i % layer.widthSamples;
+      const row = (i - col) / layer.widthSamples;
+      const x = layer.bounds.minX + col * res;
+      const z = layer.bounds.minZ + row * res;
+      if (x < fMinX) fMinX = x;
+      if (x > fMaxX) fMaxX = x;
+      if (z < fMinZ) fMinZ = z;
+      if (z > fMaxZ) fMaxZ = z;
+    }
+    featureBounds = { minX: fMinX, minZ: fMinZ, maxX: fMaxX, maxZ: fMaxZ };
+    featureBefore = { min: bMin, max: bMax, mean: bSum / shapeSet.size };
+    featureAfter = { min: aMin, max: aMax, mean: aSum / shapeSet.size };
   }
 
   return {
@@ -621,6 +714,10 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       max: touched ? afterMax : 0,
       mean: touched ? afterSum / touched : 0,
     },
+    ...(featureBounds ? { featureBounds } : {}),
+    ...(featureBefore ? { featureElevationBefore: featureBefore } : {}),
+    ...(featureAfter ? { featureElevationAfter: featureAfter } : {}),
+    ...(aliasingWarning ? { aliasingWarning } : {}),
     ...(reposeClamp ? { reposeClamp } : {}),
   };
 }

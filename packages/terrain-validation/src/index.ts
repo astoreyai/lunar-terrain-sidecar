@@ -313,10 +313,14 @@ export function validateDataset(directory: string): ValidationReport {
       for (const r of rocks.rocks) {
         const ground = groundAt(r.position_m[0], r.position_m[2]);
         if (Number.isNaN(ground)) continue;
-        // Centre must sit at ground + a*(1 - 2b) within a tolerance of one
-        // sample of local relief.
+        // Centre nominally sits at ground + a*(1 - 2b). The check is
+        // ONE-SIDED: only a rock sitting ABOVE its nominal seat is an error
+        // (floating). A rock sitting lower is buried — construction ops that
+        // dump material on top (spoil pile, berm, polygonal fill) leave the
+        // rock in place under the new surface rather than levitating it, so
+        // "deeper than nominal" is legitimate terrain history.
         const expectedY = ground + r.scale_m[1] * (1 - 2 * r.buried_fraction);
-        if (Math.abs(r.position_m[1] - expectedY) > Math.max(0.05, r.scale_m[1] * 0.5)) {
+        if (r.position_m[1] - expectedY > Math.max(0.05, r.scale_m[1] * 0.5)) {
           buriedWrong++;
         }
         // A rock whose lowest point is above the ground is floating.

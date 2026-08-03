@@ -19,6 +19,15 @@ let viewer: Viewer;
 let activeBrush: string | null = null;
 const undoStack: Array<Record<string, unknown>> = [];
 const redoStack: Array<Record<string, unknown>> = [];
+
+/** Construction kinds that take an explicit heading and length (protocol.md). */
+const HEADING_KINDS = new Set(['ramp', 'pad', 'wheel_track']);
+/** Kinds whose target elevation the user may override (auto = surface at click). */
+const TARGET_KINDS = new Set(['ramp', 'pad', 'polygonal_cut', 'polygonal_fill']);
+/** Kinds driven by a clicked polygon rather than a single brush centre. */
+const POLYGON_KINDS = new Set(['polygonal_cut', 'polygonal_fill']);
+/** Vertices collected so far for a polygonal_cut/polygonal_fill, world metres. */
+const polygonVertices: Array<[number, number]> = [];
 let currentLayers: Awaited<ReturnType<typeof fetchLayers>> = [];
 
 /** Everything the status bar must always show (spec §23). */
@@ -420,6 +429,11 @@ async function applyStoredOperation(
         changedTiles: string[];
         massBalance: { removedVolumeM3: number; depositedVolumeM3: number; relativeError: number };
       };
+      reposeClamp?: {
+        requestedHeightMeters: number;
+        appliedHeightMeters: number;
+        reposeAngleDeg: number;
+      };
     }>('terrain.applyOperation', { operation });
 
     if (pushUndo) undoStack.push(operation);
@@ -427,7 +441,13 @@ async function applyStoredOperation(
     $('edit-status').textContent =
       `${r.delta.deltaId}: ${r.delta.changedTiles.length} tiles · ` +
       `cut ${mb.removedVolumeM3.toFixed(3)} m³ · fill ${mb.depositedVolumeM3.toFixed(3)} m³ · ` +
-      `error ${(mb.relativeError * 100).toFixed(2)}%`;
+      `error ${(mb.relativeError * 100).toFixed(2)}%` +
+      // A spoil pile steeper than the regolith angle of repose is clamped by
+      // the server (spec §11); the clamp is reported, never silent.
+      (r.reposeClamp
+        ? ` · height clamped to ${r.reposeClamp.appliedHeightMeters.toFixed(3)} m ` +
+          `by ${r.reposeClamp.reposeAngleDeg} deg repose`
+        : '');
     await loadDataset();
     return true;
   } catch (e) {
@@ -436,9 +456,39 @@ async function applyStoredOperation(
   }
 }
 
+/**
+ * Target elevation for the active brush: the surface height at the reference
+ * point (the click, or the polygon centroid) unless the user unticked "auto"
+ * and typed an explicit elevation. Auto is the default and matches the
+ * pre-existing behaviour of every brush.
+ */
+function resolveTargetElevation(x: number, z: number): number {
+  const auto = ($('brush-target-auto') as HTMLInputElement).checked;
+  const surface = viewer.surfaceHeightAt(x, z);
+  if (auto || !TARGET_KINDS.has(activeBrush ?? '')) {
+    // Reflect the auto value into the override field so unticking "auto"
+    // starts from a real elevation rather than a stale one.
+    ($('brush-target') as HTMLInputElement).value = surface.toFixed(3);
+    return surface;
+  }
+  return Number(($('brush-target') as HTMLInputElement).value);
+}
+
 async function applyBrushAt(x: number, z: number): Promise<void> {
   if (!activeBrush || !client.connected) return;
+  if (POLYGON_KINDS.has(activeBrush)) {
+    // Polygon brushes collect vertices; the operation is sent by
+    // applyPolygon (Enter / "Apply polygon"), not per click.
+    polygonVertices.push([x, z]);
+    viewer.addPolygonPreview(polygonVertices);
+    $('edit-status').textContent =
+      `polygon: ${polygonVertices.length} vertices — ` +
+      `Enter or "Apply polygon" submits, Escape or "Clear" resets`;
+    return;
+  }
   const num = (id: string) => Number(($(id) as HTMLInputElement).value);
+  const heading = HEADING_KINDS.has(activeBrush) ? num('brush-heading') : 0;
+  const length = HEADING_KINDS.has(activeBrush) ? num('brush-length') : num('brush-radius') * 4;
   const operation = {
     kind: activeBrush,
     centerXMeters: x,
@@ -447,12 +497,59 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
     strengthMeters: num('brush-strength'),
     falloff: num('brush-falloff'),
     massConserving: ($('brush-mass-conserving') as HTMLInputElement).checked,
-    headingDegrees: 0,
-    lengthMeters: num('brush-radius') * 4,
-    targetElevationMeters: viewer.surfaceHeightAt(x, z),
+    headingDegrees: heading,
+    lengthMeters: length,
+    targetElevationMeters: resolveTargetElevation(x, z),
   };
   // A NEW stroke invalidates the redo history; undo/redo themselves do not.
   if (await applyStoredOperation(operation, true)) redoStack.length = 0;
+}
+
+/** Submit the collected polygon as a polygonal_cut / polygonal_fill. */
+async function applyPolygon(): Promise<void> {
+  if (!activeBrush || !POLYGON_KINDS.has(activeBrush) || !client.connected) return;
+  if (polygonVertices.length < 3) {
+    $('edit-status').textContent =
+      `polygon needs at least 3 vertices (have ${polygonVertices.length})`;
+    return;
+  }
+  const num = (id: string) => Number(($(id) as HTMLInputElement).value);
+  // The centroid stands in for the brush centre: it anchors the auto target
+  // elevation and the (otherwise unused) centre coordinates.
+  const cx = polygonVertices.reduce((s, v) => s + v[0], 0) / polygonVertices.length;
+  const cz = polygonVertices.reduce((s, v) => s + v[1], 0) / polygonVertices.length;
+  const operation = {
+    kind: activeBrush,
+    centerXMeters: cx,
+    centerZMeters: cz,
+    radiusMeters: num('brush-radius'),
+    strengthMeters: num('brush-strength'),
+    falloff: num('brush-falloff'),
+    massConserving: ($('brush-mass-conserving') as HTMLInputElement).checked,
+    targetElevationMeters: resolveTargetElevation(cx, cz),
+    polygonXZ: polygonVertices.map((v) => [v[0], v[1]]),
+  };
+  if (await applyStoredOperation(operation, true)) {
+    redoStack.length = 0;
+    clearPolygon(false); // keep the delta report applyStoredOperation just wrote
+  }
+}
+
+/** Drop the in-progress polygon. `announce` writes to edit-status. */
+function clearPolygon(announce: boolean): void {
+  polygonVertices.length = 0;
+  viewer.clearPolygonPreview();
+  if (announce) $('edit-status').textContent = 'polygon cleared';
+}
+
+/** Show only the parameter fields the active brush actually uses. */
+function updateBrushParamVisibility(): void {
+  const kind = activeBrush ?? '';
+  $('param-heading').hidden = !HEADING_KINDS.has(kind);
+  $('param-length').hidden = !HEADING_KINDS.has(kind);
+  $('param-target-auto').hidden = !TARGET_KINDS.has(kind);
+  $('param-target').hidden = !TARGET_KINDS.has(kind);
+  $('polygon-controls').hidden = !POLYGON_KINDS.has(kind);
 }
 
 /** Kinds whose stored parameters fully determine an exact inverse. */
@@ -467,7 +564,9 @@ const INVERTIBLE_KINDS: Record<string, string> = {
  * Undo re-applies the exact inverse operation.
  *
  * Only raise/lower/berm/trench are invertible from the stored record; smooth,
- * flatten and crater_stamp destroy information (the pre-edit surface is gone),
+ * flatten, crater_stamp and every construction kind (ramp, pad, spoil_pile,
+ * wheel_track, polygonal_cut, polygonal_fill) destroy information (the
+ * pre-edit surface is gone),
  * so "undoing" them by re-applying anything would corrupt the terrain further
  * — the honest behaviour is to refuse with an explanation. This replaced code
  * whose fallback re-applied the SAME operation: undoing a crater stamped a
@@ -661,15 +760,38 @@ function wireUi(): void {
     $(id).addEventListener('change', applyVisualization);
   }
 
-  for (const btn of Array.from($('brush-buttons').querySelectorAll('button'))) {
+  // Sculpting and construction chips share one active-brush selection.
+  const brushRows = ['brush-buttons', 'construction-buttons'];
+  const allBrushButtons = () =>
+    brushRows.flatMap((id) => Array.from($(id).querySelectorAll('button')));
+  for (const btn of allBrushButtons()) {
     btn.addEventListener('click', () => {
       const brush = btn.getAttribute('data-brush');
       activeBrush = activeBrush === brush ? null : brush;
-      for (const b of Array.from($('brush-buttons').querySelectorAll('button'))) {
+      for (const b of allBrushButtons()) {
         b.classList.toggle('active', b.getAttribute('data-brush') === activeBrush);
       }
+      // A half-built polygon is meaningless under a non-polygon brush.
+      if (!POLYGON_KINDS.has(activeBrush ?? '')) clearPolygon(false);
+      updateBrushParamVisibility();
     });
   }
+
+  $('btn-polygon-apply').addEventListener('click', () => void applyPolygon());
+  $('btn-polygon-clear').addEventListener('click', () => clearPolygon(true));
+  window.addEventListener('keydown', (e) => {
+    if (!activeBrush || !POLYGON_KINDS.has(activeBrush)) return;
+    // Never hijack Enter/Escape from a form field.
+    const tag = (document.activeElement?.tagName ?? '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void applyPolygon();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      clearPolygon(true);
+    }
+  });
 
   const canvas = $('canvas') as HTMLCanvasElement;
   canvas.addEventListener('pointermove', (e) => {
