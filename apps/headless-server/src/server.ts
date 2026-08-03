@@ -49,7 +49,7 @@ import {
   solarPositionAtSite,
   parseInstant,
 } from '@lts/lunar-solar';
-import { applyOperation, layerChecksum, makeDelta } from './operations.js';
+import { applyOperation, layerChecksum, makeDelta, maskChecksum } from './operations.js';
 
 interface Session {
   dataset?: TerrainDataset;
@@ -75,6 +75,30 @@ let jobCounter = 0;
 let runningJobId: string | null = null;
 /** Bound on remembered job records; oldest finished jobs are pruned. */
 const MAX_JOB_RECORDS = 64;
+
+/**
+ * Exactly the operation kinds `applyOperation` implements. Declared once so
+ * the capabilities announcement and the apply/replay validation cannot drift:
+ * an unknown kind is a structured error, never a silent no-op.
+ */
+const OPERATION_KINDS = [
+  'raise',
+  'lower',
+  'smooth',
+  'flatten',
+  'slope',
+  'noise',
+  'semantic_paint',
+  'crater_stamp',
+  'trench',
+  'berm',
+  'ramp',
+  'pad',
+  'spoil_pile',
+  'wheel_track',
+  'polygonal_cut',
+  'polygonal_fill',
+] as const;
 
 function pruneJobs(): void {
   if (jobs.size <= MAX_JOB_RECORDS) return;
@@ -224,6 +248,204 @@ function reseatRocks(
   return moved;
 }
 
+/**
+ * Compact, transfer-friendly view of a delta for history listings and replay
+ * results: identity, sequencing, mass balance and checksums, but the tile-id
+ * LIST reduced to its count — a history browser needs "how much changed",
+ * not thousands of tile ids per row (terrain.getTile serves the data itself).
+ */
+function deltaSummary(d: TerrainDelta) {
+  return {
+    deltaId: d.deltaId,
+    sequenceNumber: d.sequenceNumber,
+    kind: d.operations[0].kind,
+    changedTileCount: d.changedTiles.length,
+    massBalance: d.massBalance,
+    timestamp: d.timestamp,
+    resultingChecksum: d.resultingChecksum,
+    resultingMaskChecksum: d.resultingMaskChecksum,
+  };
+}
+
+/**
+ * The single internal path every edit takes, whether it arrives via
+ * terrain.applyOperation or terrain.replayLog (spec §12, §19): validate,
+ * apply, refresh bounds, re-seat rocks, record the delta and the operation
+ * log entry, and append any construction feature. Replay going through the
+ * same door as a live apply is what makes the replayed terrain identical —
+ * a second code path would drift.
+ */
+function performOperation(opInput: Partial<TerrainOperation> | undefined) {
+  const dataset = requireDataset();
+  if (!opInput || typeof opInput.kind !== 'string') {
+    throw new TerrainError(ERROR_CODES.INVALID_CONFIG, 'operation.kind is required');
+  }
+  if (!(OPERATION_KINDS as readonly string[]).includes(opInput.kind)) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      `unknown operation kind '${opInput.kind}'`,
+      { kind: opInput.kind, supported: [...OPERATION_KINDS] },
+    );
+  }
+  const layer =
+    dataset.layers.find((l) => l.id === opInput.layerId) ??
+    dataset.layers.reduce((a, b) =>
+      a.horizontalResolutionMeters <= b.horizontalResolutionMeters ? a : b,
+    );
+
+  // Every numeric parameter is checked finite BEFORE touching the
+  // heightfield. A NaN here would be committed into terrain data and
+  // acknowledged with a success delta, surfacing only much later as
+  // validation failures far from the cause.
+  const finite = (v: unknown, name: string, fallback: number): number => {
+    if (v === undefined) return fallback;
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new TerrainError(
+        ERROR_CODES.INVALID_CONFIG,
+        `operation.${name} must be a finite number`,
+        { [name]: String(v) },
+      );
+    }
+    return v;
+  };
+  const finiteOpt = (v: unknown, name: string): number | undefined =>
+    v === undefined ? undefined : finite(v, name, 0);
+
+  const op: TerrainOperation = {
+    operationId: `op-${String(session.operationLog.length).padStart(6, '0')}`,
+    kind: opInput.kind as TerrainOperation['kind'],
+    layerId: layer.id,
+    centerXMeters: finite(opInput.centerXMeters, 'centerXMeters', 0),
+    centerZMeters: finite(opInput.centerZMeters, 'centerZMeters', 0),
+    radiusMeters: finite(opInput.radiusMeters, 'radiusMeters', 1),
+    strengthMeters: finite(opInput.strengthMeters, 'strengthMeters', 0.1),
+    falloff: finite(opInput.falloff, 'falloff', 2),
+    targetElevationMeters: finiteOpt(opInput.targetElevationMeters, 'targetElevationMeters'),
+    headingDegrees: finiteOpt(opInput.headingDegrees, 'headingDegrees'),
+    lengthMeters: finiteOpt(opInput.lengthMeters, 'lengthMeters'),
+    // Validated structurally (>= 3 finite [x, z] vertices) inside
+    // applyOperation, before the heightfield is touched.
+    ...(opInput.polygonXZ !== undefined ? { polygonXZ: opInput.polygonXZ } : {}),
+    // Required for 'noise' / 'semantic_paint' respectively; both validated
+    // inside applyOperation before the heightfield or mask is touched.
+    ...(opInput.noiseSeed !== undefined ? { noiseSeed: opInput.noiseSeed } : {}),
+    ...(opInput.semanticClass !== undefined ? { semanticClass: opInput.semanticClass } : {}),
+    massConserving: opInput.massConserving ?? false,
+    timestamp: new Date().toISOString(),
+  };
+  if (op.radiusMeters <= 0) {
+    throw new TerrainError(ERROR_CODES.INVALID_CONFIG, 'operation.radiusMeters must be positive', {
+      radiusMeters: op.radiusMeters,
+    });
+  }
+
+  const before = layerChecksum(layer);
+  const beforeMask = maskChecksum(layer);
+  const result = applyOperation(layer, op);
+  // The edit moved the surface, so the layer's recorded vertical bounds
+  // are stale; exporting them would fail the exporter's own
+  // vertical-bounds validation on perfectly healthy data.
+  recomputeVerticalBounds(layer);
+  dataset.bounds.minY = Math.min(...dataset.layers.map((l) => l.bounds.minY));
+  dataset.bounds.maxY = Math.max(...dataset.layers.map((l) => l.bounds.maxY));
+  // Rocks sit *on* the surface, so an edit that moves the ground must
+  // move them with it. Without this, lowering terrain under a boulder
+  // leaves it hanging in vacuum — which the exporter's
+  // "no rock sits entirely above the terrain" check correctly rejected.
+  const reseated = reseatRocks(dataset, result.bounds);
+  const delta = makeDelta(
+    layer,
+    op,
+    result,
+    session.deltas.length,
+    before,
+    beforeMask,
+    session.tileSizeSamples,
+  );
+  session.deltas.push(delta);
+  session.operationLog.push(op);
+
+  // Construction kinds (spec §11) — everything except the plain
+  // sculpting brushes — are additionally recorded in the feature
+  // manifest with their measured mass balance, so the export carries an
+  // auditable record of every engineered feature.
+  const constructionSemantic: Partial<Record<TerrainOperation['kind'], string>> = {
+    trench: 'trench',
+    berm: 'berm',
+    ramp: 'compacted_surface',
+    pad: 'compacted_surface',
+    spoil_pile: 'berm',
+    wheel_track: 'disturbed_regolith',
+    polygonal_cut: 'trench',
+    polygonal_fill: 'berm',
+  };
+  const semanticClass = constructionSemantic[op.kind];
+  if (semanticClass !== undefined) {
+    const bulkDensityKgM3 = 1500;
+    const parameters: ConstructionFeature['parameters'] = {
+      centerXMeters: op.centerXMeters,
+      centerZMeters: op.centerZMeters,
+      radiusMeters: op.radiusMeters,
+      strengthMeters: op.strengthMeters,
+      falloff: op.falloff,
+      massConserving: op.massConserving ?? false,
+      ...(op.targetElevationMeters !== undefined
+        ? { targetElevationMeters: op.targetElevationMeters }
+        : {}),
+      ...(op.headingDegrees !== undefined ? { headingDegrees: op.headingDegrees } : {}),
+      ...(op.lengthMeters !== undefined ? { lengthMeters: op.lengthMeters } : {}),
+      // Flattened [x0, z0, x1, z1, ...] because feature parameters are
+      // scalars and flat arrays only.
+      ...(op.polygonXZ !== undefined
+        ? { polygonXZFlat: op.polygonXZ.flat(), polygonVertexCount: op.polygonXZ.length }
+        : {}),
+      ...(result.aliasingWarning !== undefined
+        ? { aliasingWarning: result.aliasingWarning }
+        : {}),
+      ...(result.reposeClamp !== undefined
+        ? {
+            reposeClampApplied: true,
+            requestedHeightMeters: result.reposeClamp.requestedHeightMeters,
+            appliedHeightMeters: result.reposeClamp.appliedHeightMeters,
+            reposeAngleDeg: result.reposeClamp.reposeAngleDeg,
+          }
+        : {}),
+    };
+    const feature: ConstructionFeature = {
+      id: `construction-${op.operationId}`,
+      kind: op.kind as ConstructionFeature['kind'],
+      appliedToLayers: [layer.id],
+      // Footprint only — the delta's affectedBounds (below) still
+      // covers the borrow ring for tile invalidation, but the FEATURE
+      // is its geometry, not the ring it borrowed regolith from.
+      affectedBounds: result.featureBounds ?? result.bounds,
+      parameters,
+      massBalance: {
+        removedVolumeM3: delta.massBalance.removedVolumeM3,
+        depositedVolumeM3: delta.massBalance.depositedVolumeM3,
+        netVolumeM3: delta.massBalance.netVolumeM3,
+        relativeError: delta.massBalance.relativeError,
+        bulkDensityKgM3,
+        netMassKg: delta.massBalance.netVolumeM3 * bulkDensityKgM3,
+      },
+      elevationBefore: result.featureElevationBefore ?? result.elevationBefore,
+      elevationAfter: result.featureElevationAfter ?? result.elevationAfter,
+      semanticClass,
+    };
+    dataset.featureManifest.push(feature);
+  }
+
+  return {
+    delta,
+    operation: op,
+    rocksReseated: reseated,
+    ...(result.reposeClamp !== undefined ? { reposeClamp: result.reposeClamp } : {}),
+    ...(result.aliasingWarning !== undefined
+      ? { aliasingWarning: result.aliasingWarning }
+      : {}),
+  };
+}
+
 async function handle(
   raw: string,
   _socket: WebSocket,
@@ -265,21 +487,7 @@ async function handle(
           exportFormats: ['rf32', 'exr', 'png16', 'npy', 'glb', 'json'],
           // Declared honestly: exactly the operations that are implemented.
           // Anything absent returns a structured error, never a silent no-op.
-          operations: [
-            'raise',
-            'lower',
-            'smooth',
-            'flatten',
-            'crater_stamp',
-            'trench',
-            'berm',
-            'ramp',
-            'pad',
-            'spoil_pile',
-            'wheel_track',
-            'polygonal_cut',
-            'polygonal_fill',
-          ],
+          operations: [...OPERATION_KINDS],
           craterModels: ['production_csfd', 'power_law'],
           rockModels: ['golombek_sfd', 'power_law'],
           noiseModels: ['fbm', 'ridged', 'warped_fbm'],
@@ -504,161 +712,74 @@ async function handle(
 
       case 'terrain.applyOperation': {
         requireNoRunningJob('apply an operation');
-        const dataset = requireDataset();
-        const opInput = p.operation as Partial<TerrainOperation> | undefined;
-        if (!opInput || typeof opInput.kind !== 'string') {
-          throw new TerrainError(ERROR_CODES.INVALID_CONFIG, 'operation.kind is required');
-        }
-        const layer =
-          dataset.layers.find((l) => l.id === opInput.layerId) ??
-          dataset.layers.reduce((a, b) =>
-            a.horizontalResolutionMeters <= b.horizontalResolutionMeters ? a : b,
-          );
+        return ok(req.id, performOperation(p.operation as Partial<TerrainOperation> | undefined));
+      }
 
-        // Every numeric parameter is checked finite BEFORE touching the
-        // heightfield. A NaN here would be committed into terrain data and
-        // acknowledged with a success delta, surfacing only much later as
-        // validation failures far from the cause.
-        const finite = (v: unknown, name: string, fallback: number): number => {
-          if (v === undefined) return fallback;
-          if (typeof v !== 'number' || !Number.isFinite(v)) {
+      case 'terrain.getOperationLog': {
+        // History inspection (spec §12): the full ordered operation log plus
+        // per-delta SUMMARIES — the tile-id lists can run to thousands of
+        // entries per delta and a history browser needs counts, not dumps.
+        return ok(req.id, {
+          operations: [...session.operationLog],
+          deltas: session.deltas.map((d) => deltaSummary(d)),
+        });
+      }
+
+      case 'terrain.replayLog': {
+        // Deterministic replay of edits (spec §12, §19): generate with the
+        // same seed, replay the same log, get the same terrain. Each record
+        // goes through performOperation — exactly the applyOperation path,
+        // validation included — so a replay can never commit what a live
+        // apply would have refused.
+        requireNoRunningJob('replay an operation log');
+        const dataset = requireDataset();
+        const ops = p.operations;
+        if (!Array.isArray(ops)) {
+          throw new TerrainError(
+            ERROR_CODES.INVALID_CONFIG,
+            "parameter 'operations' must be an array of operation records",
+            { operations: String(ops) },
+          );
+        }
+        const applied: Array<ReturnType<typeof deltaSummary>> = [];
+        for (let i = 0; i < ops.length; i++) {
+          try {
+            const outcome = performOperation(ops[i] as Partial<TerrainOperation>);
+            applied.push(deltaSummary(outcome.delta));
+          } catch (e) {
+            // Apply-up-to-failure: operations before the bad record are
+            // already committed and stay committed (there is no transaction
+            // over a heightfield) — so the error must say exactly how far
+            // the replay got, never leave the caller guessing at the state.
+            const cause =
+              e instanceof TerrainError
+                ? e.toJSON()
+                : { code: 'TERRAIN_INTERNAL', message: String(e), details: {} };
             throw new TerrainError(
               ERROR_CODES.INVALID_CONFIG,
-              `operation.${name} must be a finite number`,
-              { [name]: String(v) },
+              `replay failed at operations[${i}]: ${cause.message} — the ${applied.length} ` +
+                'preceding operation(s) were applied and remain applied',
+              {
+                failedIndex: i,
+                appliedOperations: applied.length,
+                totalOperations: ops.length,
+                cause,
+              },
             );
           }
-          return v;
-        };
-        const finiteOpt = (v: unknown, name: string): number | undefined =>
-          v === undefined ? undefined : finite(v, name, 0);
-
-        const op: TerrainOperation = {
-          operationId: `op-${String(session.operationLog.length).padStart(6, '0')}`,
-          kind: opInput.kind as TerrainOperation['kind'],
-          layerId: layer.id,
-          centerXMeters: finite(opInput.centerXMeters, 'centerXMeters', 0),
-          centerZMeters: finite(opInput.centerZMeters, 'centerZMeters', 0),
-          radiusMeters: finite(opInput.radiusMeters, 'radiusMeters', 1),
-          strengthMeters: finite(opInput.strengthMeters, 'strengthMeters', 0.1),
-          falloff: finite(opInput.falloff, 'falloff', 2),
-          targetElevationMeters: finiteOpt(opInput.targetElevationMeters, 'targetElevationMeters'),
-          headingDegrees: finiteOpt(opInput.headingDegrees, 'headingDegrees'),
-          lengthMeters: finiteOpt(opInput.lengthMeters, 'lengthMeters'),
-          // Validated structurally (>= 3 finite [x, z] vertices) inside
-          // applyOperation, before the heightfield is touched.
-          ...(opInput.polygonXZ !== undefined ? { polygonXZ: opInput.polygonXZ } : {}),
-          massConserving: opInput.massConserving ?? false,
-          timestamp: new Date().toISOString(),
-        };
-        if (op.radiusMeters <= 0) {
-          throw new TerrainError(ERROR_CODES.INVALID_CONFIG, 'operation.radiusMeters must be positive', {
-            radiusMeters: op.radiusMeters,
-          });
         }
-
-        const before = layerChecksum(layer);
-        const result = applyOperation(layer, op);
-        // The edit moved the surface, so the layer's recorded vertical bounds
-        // are stale; exporting them would fail the exporter's own
-        // vertical-bounds validation on perfectly healthy data.
-        recomputeVerticalBounds(layer);
-        dataset.bounds.minY = Math.min(...dataset.layers.map((l) => l.bounds.minY));
-        dataset.bounds.maxY = Math.max(...dataset.layers.map((l) => l.bounds.maxY));
-        // Rocks sit *on* the surface, so an edit that moves the ground must
-        // move them with it. Without this, lowering terrain under a boulder
-        // leaves it hanging in vacuum — which the exporter's
-        // "no rock sits entirely above the terrain" check correctly rejected.
-        const reseated = reseatRocks(dataset, result.bounds);
-        const delta = makeDelta(
-          layer,
-          op,
-          result,
-          session.deltas.length,
-          before,
-          session.tileSizeSamples,
+        // Final state: the last delta's checksums, or the current (finest)
+        // layer's if the submitted log was empty.
+        const finest = dataset.layers.reduce((a, b) =>
+          a.horizontalResolutionMeters <= b.horizontalResolutionMeters ? a : b,
         );
-        session.deltas.push(delta);
-        session.operationLog.push(op);
-
-        // Construction kinds (spec §11) — everything except the plain
-        // sculpting brushes — are additionally recorded in the feature
-        // manifest with their measured mass balance, so the export carries an
-        // auditable record of every engineered feature.
-        const constructionSemantic: Partial<Record<TerrainOperation['kind'], string>> = {
-          trench: 'trench',
-          berm: 'berm',
-          ramp: 'compacted_surface',
-          pad: 'compacted_surface',
-          spoil_pile: 'berm',
-          wheel_track: 'disturbed_regolith',
-          polygonal_cut: 'trench',
-          polygonal_fill: 'berm',
-        };
-        const semanticClass = constructionSemantic[op.kind];
-        if (semanticClass !== undefined) {
-          const bulkDensityKgM3 = 1500;
-          const parameters: ConstructionFeature['parameters'] = {
-            centerXMeters: op.centerXMeters,
-            centerZMeters: op.centerZMeters,
-            radiusMeters: op.radiusMeters,
-            strengthMeters: op.strengthMeters,
-            falloff: op.falloff,
-            massConserving: op.massConserving ?? false,
-            ...(op.targetElevationMeters !== undefined
-              ? { targetElevationMeters: op.targetElevationMeters }
-              : {}),
-            ...(op.headingDegrees !== undefined ? { headingDegrees: op.headingDegrees } : {}),
-            ...(op.lengthMeters !== undefined ? { lengthMeters: op.lengthMeters } : {}),
-            // Flattened [x0, z0, x1, z1, ...] because feature parameters are
-            // scalars and flat arrays only.
-            ...(op.polygonXZ !== undefined
-              ? { polygonXZFlat: op.polygonXZ.flat(), polygonVertexCount: op.polygonXZ.length }
-              : {}),
-            ...(result.aliasingWarning !== undefined
-              ? { aliasingWarning: result.aliasingWarning }
-              : {}),
-            ...(result.reposeClamp !== undefined
-              ? {
-                  reposeClampApplied: true,
-                  requestedHeightMeters: result.reposeClamp.requestedHeightMeters,
-                  appliedHeightMeters: result.reposeClamp.appliedHeightMeters,
-                  reposeAngleDeg: result.reposeClamp.reposeAngleDeg,
-                }
-              : {}),
-          };
-          const feature: ConstructionFeature = {
-            id: `construction-${op.operationId}`,
-            kind: op.kind as ConstructionFeature['kind'],
-            appliedToLayers: [layer.id],
-            // Footprint only — the delta's affectedBounds (below) still
-            // covers the borrow ring for tile invalidation, but the FEATURE
-            // is its geometry, not the ring it borrowed regolith from.
-            affectedBounds: result.featureBounds ?? result.bounds,
-            parameters,
-            massBalance: {
-              removedVolumeM3: delta.massBalance.removedVolumeM3,
-              depositedVolumeM3: delta.massBalance.depositedVolumeM3,
-              netVolumeM3: delta.massBalance.netVolumeM3,
-              relativeError: delta.massBalance.relativeError,
-              bulkDensityKgM3,
-              netMassKg: delta.massBalance.netVolumeM3 * bulkDensityKgM3,
-            },
-            elevationBefore: result.featureElevationBefore ?? result.elevationBefore,
-            elevationAfter: result.featureElevationAfter ?? result.elevationAfter,
-            semanticClass,
-          };
-          dataset.featureManifest.push(feature);
-        }
-
+        const last = session.deltas[session.deltas.length - 1];
         return ok(req.id, {
-          delta,
-          operation: op,
-          rocksReseated: reseated,
-          ...(result.reposeClamp !== undefined ? { reposeClamp: result.reposeClamp } : {}),
-          ...(result.aliasingWarning !== undefined
-            ? { aliasingWarning: result.aliasingWarning }
-            : {}),
+          applied: applied.length,
+          deltas: applied,
+          finalChecksum: applied.length > 0 ? last.resultingChecksum : layerChecksum(finest),
+          finalMaskChecksum:
+            applied.length > 0 ? last.resultingMaskChecksum : maskChecksum(finest),
         });
       }
 

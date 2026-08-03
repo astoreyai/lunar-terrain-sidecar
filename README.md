@@ -120,7 +120,7 @@ All numbers below were produced by the commands in this README on this machine
 | samples | 10,259,003 |
 | craters / rocks | 8,023 / 6,409 |
 | artifacts | 183 files, 625.9 MB |
-| generate / export | 5.7 s / 1.7 s |
+| generate / export | 4.7 s / 1.8 s |
 | validation | 26 checks, 0 errors |
 | reproducibility | **183/183 artifacts byte-identical** |
 
@@ -152,7 +152,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 167 tests, 8 files, all passing.
+**Test suite**: 188 tests, 9 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants

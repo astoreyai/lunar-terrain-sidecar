@@ -14,11 +14,13 @@
 import { createHash } from 'node:crypto';
 import {
   ERROR_CODES,
+  SEMANTIC_CLASSES,
   TerrainError,
   semanticIndex,
   type SemanticClass,
   type TerrainLayer,
 } from '@lts/shared-types';
+import { PerlinNoise2D, fbm, type FractalParameters } from '@lts/terrain-core';
 import type { TerrainDelta, TerrainOperation } from '@lts/terrain-protocol';
 
 export interface ElevationStats {
@@ -198,8 +200,74 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
   let trackHalfLen = 0;
   let pileHeight = 0;
   let reposeClamp: ApplyResult['reposeClamp'];
+  let slopeCenterElev = 0;
+  let noiseField: PerlinNoise2D | null = null;
+  let noiseParams: FractalParameters | null = null;
+  let paintIndex = 0;
 
   switch (op.kind) {
+    case 'slope': {
+      // A slope without a direction is meaningless, so the heading is
+      // required — defaulting it to north would silently tilt the wrong way.
+      requireFinite(op.headingDegrees, 'headingDegrees', op.kind);
+      // The plane passes through the click point's CURRENT elevation:
+      // capture it before anything is mutated.
+      const c = Math.max(
+        0,
+        Math.min(layer.widthSamples - 1, Math.round((op.centerXMeters - layer.bounds.minX) / res)),
+      );
+      const r = Math.max(
+        0,
+        Math.min(layer.heightSamples - 1, Math.round((op.centerZMeters - layer.bounds.minZ) / res)),
+      );
+      slopeCenterElev = layer.heightData[r * layer.widthSamples + c];
+      break;
+    }
+    case 'noise': {
+      // The seed is part of the stored record so the same operation record
+      // reproduces the same displacement on replay — an unseeded stamp would
+      // silently break the "seed plus the ordered log" reproducibility
+      // contract this whole module exists for.
+      if (typeof op.noiseSeed !== 'string' || op.noiseSeed.length === 0) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `operation.noiseSeed is required and must be a non-empty string for '${op.kind}'`,
+          { noiseSeed: String(op.noiseSeed) },
+        );
+      }
+      noiseField = new PerlinNoise2D(op.noiseSeed);
+      noiseParams = {
+        octaves: 4,
+        lacunarity: 2.0,
+        persistence: 0.5,
+        frequency: 2 / op.radiusMeters,
+        amplitude: op.strengthMeters,
+      };
+      break;
+    }
+    case 'semantic_paint': {
+      const cls = op.semanticClass;
+      if (
+        typeof cls !== 'string' ||
+        !(SEMANTIC_CLASSES as readonly string[]).includes(cls)
+      ) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `operation.semanticClass is required for '${op.kind}' and must be one of: ` +
+            SEMANTIC_CLASSES.join(', '),
+          { semanticClass: String(cls), validClasses: [...SEMANTIC_CLASSES] },
+        );
+      }
+      if (!layer.masks.semantic) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `layer '${layer.id}' carries no semantic mask to paint`,
+          { layerId: layer.id },
+        );
+      }
+      paintIndex = semanticIndex(cls as SemanticClass);
+      break;
+    }
     case 'ramp': {
       requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
       rampLength = requireFinite(op.lengthMeters, 'lengthMeters', op.kind);
@@ -363,7 +431,8 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
    * exactly the samples where grading was unnecessary, and marked the
    * polygonal falloff band (outside the polygon) as if it were the feature.
    */
-  const shapeSet: Set<number> | null = CONSTRUCTION_SEMANTIC[op.kind] ? new Set() : null;
+  const shapeSet: Set<number> | null =
+    CONSTRUCTION_SEMANTIC[op.kind] || op.kind === 'semantic_paint' ? new Set() : null;
 
   for (let row = rowMin; row <= rowMax; row++) {
     const z = layer.bounds.minZ + row * res;
@@ -387,6 +456,38 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
             const target = op.targetElevationMeters ?? 0;
             dh = (target - layer.heightData[i]) * w;
           }
+          break;
+        }
+        case 'slope': {
+          // Tilt toward the plane through the click point's pre-edit
+          // elevation, descending along the heading at strength/radius
+          // metres per metre (ADR 0002 azimuth: 0 = north = -Z).
+          const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
+          const w = falloffWeight(d, op.radiusMeters, op.falloff);
+          if (w > 0) {
+            const along = (x - op.centerXMeters) * ax + (z - op.centerZMeters) * az;
+            const planeElevation =
+              slopeCenterElev - along * (op.strengthMeters / op.radiusMeters);
+            dh = (planeElevation - layer.heightData[i]) * w;
+          }
+          break;
+        }
+        case 'noise': {
+          // Deterministic seeded fBm stamp: the field is a pure function of
+          // (noiseSeed, x, z), so an identical operation record reproduces
+          // an identical displacement on replay.
+          const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
+          const w = falloffWeight(d, op.radiusMeters, op.falloff);
+          if (w > 0) dh = fbm(noiseField!, x, z, noiseParams!) * w;
+          break;
+        }
+        case 'semantic_paint': {
+          // Mask-only: ZERO height change. The falloff weight defines the
+          // painted footprint (w > 0 exactly where d < radius); dh stays 0
+          // so removed/deposited volumes and the height checksum are
+          // untouched by construction, not by accident.
+          const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
+          if (falloffWeight(d, op.radiusMeters, op.falloff) > 0) shapeSet!.add(i);
           break;
         }
         case 'smooth': {
@@ -556,7 +657,10 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     }
   }
 
-  const semClass = CONSTRUCTION_SEMANTIC[op.kind];
+  const semClass: SemanticClass | undefined =
+    op.kind === 'semantic_paint'
+      ? SEMANTIC_CLASSES[paintIndex]
+      : CONSTRUCTION_SEMANTIC[op.kind];
 
   // Pass 2: mass conservation. Redistribute the net volume over the annulus
   // between the footprint radius and 1.6× it so cut-and-fill balances. The
@@ -694,11 +798,16 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     featureAfter = { min: aMin, max: aMax, mean: aSum / shapeSet.size };
   }
 
+  // A semantic_paint moves no height, so the delta-derived bounds above are
+  // empty — but the mask DID change over the painted footprint, and tile
+  // invalidation must cover it. Use the footprint bounds instead.
+  const paintBounds = op.kind === 'semantic_paint' ? featureBounds : undefined;
+
   return {
     removedVolumeM3: removed,
     depositedVolumeM3: deposited,
     samplesTouched: touched,
-    bounds: {
+    bounds: paintBounds ?? {
       minX: touched ? minX : ringCx,
       maxX: touched ? maxX : ringCx,
       minZ: touched ? minZ : ringCz,
@@ -729,6 +838,20 @@ export function layerChecksum(layer: TerrainLayer): string {
     layer.heightData.byteOffset,
     layer.heightData.byteLength,
   );
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * SHA-256 of a layer's semantic mask, carried on every delta. A mask-only
+ * operation (`semantic_paint`) leaves the height checksum unchanged, so
+ * without this the delta would claim nothing happened. A layer with no
+ * semantic mask hashes the empty buffer — a stable, honest "no mask" value.
+ */
+export function maskChecksum(layer: TerrainLayer): string {
+  const mask = layer.masks.semantic;
+  const buf = mask
+    ? Buffer.from(mask.buffer, mask.byteOffset, mask.byteLength)
+    : Buffer.alloc(0);
   return createHash('sha256').update(buf).digest('hex');
 }
 
@@ -766,6 +889,7 @@ export function makeDelta(
   result: ApplyResult,
   sequenceNumber: number,
   previousChecksum: string,
+  previousMaskChecksum: string,
   tileSizeSamples: number,
 ): TerrainDelta {
   const net = result.depositedVolumeM3 - result.removedVolumeM3;
@@ -779,6 +903,8 @@ export function makeDelta(
     operations: [op],
     previousChecksum,
     resultingChecksum: layerChecksum(layer),
+    previousMaskChecksum,
+    resultingMaskChecksum: maskChecksum(layer),
     massBalance: {
       removedVolumeM3: result.removedVolumeM3,
       depositedVolumeM3: result.depositedVolumeM3,

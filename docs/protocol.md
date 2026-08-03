@@ -90,6 +90,8 @@ The server holds **one session with one shared dataset** (`Session` in `server.t
 | `terrain.loadConfig` | `{path}` | the parsed, validated config |
 | `terrain.saveConfig` | `{path, config}` | `{path, bytes}` |
 | `terrain.applyOperation` | `{operation}` (*dataset*, no running job) | `{delta, operation, rocksReseated}` — see below |
+| `terrain.getOperationLog` | — | `{operations, deltas}` — the full ordered operation log plus per-delta **summaries** (`deltaId`, `sequenceNumber`, `kind`, `changedTileCount`, `massBalance`, `timestamp`, `resultingChecksum`, `resultingMaskChecksum`); empty arrays before any generate |
+| `terrain.replayLog` | `{operations: TerrainOperation[]}` (*dataset*, no running job) | applies each record in order through the **same internal path** as `applyOperation`, validation included; returns `{applied, deltas, finalChecksum, finalMaskChecksum}`. Deterministic replay (spec §12, §19): generate the same seed, replay the same log, get the same terrain. A malformed record mid-log fails with a structured error whose `details` carry `failedIndex`, `appliedOperations` and the causing error — operations before the failure are applied and stay applied (apply-up-to-failure, reported, never silent) |
 | `terrain.getTile` | `{layerId?, col0, row0, width, height, stride?}` (*dataset*) | `{layerId, col0, row0, width, height, stride, resolutionMeters, layerResolutionMeters, encoding:'base64:float32le', data}` |
 | `terrain.getHeight` | `{x, z}` (*dataset*) | `{x, z, elevationM, layerId, datumElevationM}` — finest covering layer, bilinear |
 | `terrain.getNormal` | `{x, z}` (*dataset*) | `{x, z, normal: {x,y,z} \| null, layerId?}` |
@@ -111,7 +113,7 @@ The server holds **one session with one shared dataset** (`Session` in `server.t
 
 Edits are **replayable records**, never mutated meshes (`operations.ts` header; spec §12, §19). `terrain.applyOperation` validates every numeric parameter finite *before* touching the heightfield (a NaN would be committed and surface only much later), applies the operation to the named layer (default: the finest), recomputes vertical bounds, re-seats rocks whose centres fall in the affected bounds (`reseatRocks` in `server.ts` — rocks are instances, not heightfield features), and returns a delta.
 
-`TerrainOperation` fields (`terrain-protocol`): `operationId` (`op-NNNNNN`), `kind` (table below), `layerId`, `centerXMeters`, `centerZMeters`, `radiusMeters`, `strengthMeters` (signed magnitude, metres; interpretation depends on `kind`), `falloff` (exponent; 1 linear, 2 smooth), `targetElevationMeters?`, `headingDegrees?` + `lengthMeters?`, `polygonXZ?` (polygonal ops: ≥ 3 finite `[x, z]` vertices, world metres), `massConserving?`, `timestamp` (ISO-8601).
+`TerrainOperation` fields (`terrain-protocol`): `operationId` (`op-NNNNNN`), `kind` (table below), `layerId`, `centerXMeters`, `centerZMeters`, `radiusMeters`, `strengthMeters` (signed magnitude, metres; interpretation depends on `kind`), `falloff` (exponent; 1 linear, 2 smooth), `targetElevationMeters?`, `headingDegrees?` + `lengthMeters?`, `polygonXZ?` (polygonal ops: ≥ 3 finite `[x, z]` vertices, world metres), `noiseSeed?` (required for `noise`), `semanticClass?` (required for `semantic_paint`), `massConserving?`, `timestamp` (ISO-8601).
 
 Operation kinds:
 
@@ -120,6 +122,9 @@ Operation kinds:
 | `raise` / `lower` | radial brush, ±`strengthMeters` at the centre | `radiusMeters`, `falloff` |
 | `smooth` | blend toward the 4-neighbour mean | `strengthMeters` caps the blend factor |
 | `flatten` | pull toward `targetElevationMeters` | weighted by the brush falloff |
+| `slope` | radial brush: tilt toward a plane through the click point's **current** elevation | gradient `strengthMeters` per `radiusMeters`, descending along `headingDegrees` (required; ADR 0002 azimuth) |
+| `noise` | radial brush: deterministic seeded fBm stamp, amplitude `strengthMeters` | requires `noiseSeed` (string); 4 octaves at frequency 2/`radiusMeters` — the same record reproduces the same displacement on replay |
+| `semantic_paint` | radial brush, **mask only**: paints the semantic mask, zero height change | requires `semanticClass` (one of `SEMANTIC_CLASSES`; invalid names fail with a structured error listing the valid set); volumes are zero and the height checksum is unchanged — the delta's mask checksums record the change |
 | `crater_stamp` | parabolic cavity + Gaussian rim out to 1.3·radius | `strengthMeters` = depth |
 | `trench` / `berm` | linear cut/heap along a segment centred on the centre | `headingDegrees`, `lengthMeters`, `radiusMeters` = half-width |
 | `ramp` | linear grade from the existing elevation at the centre (near end) to `targetElevationMeters` at the far end, `lengthMeters` along `headingDegrees` | `radiusMeters` = half-width; smooth edge-falloff band |
@@ -130,7 +135,7 @@ Operation kinds:
 
 Everything from `trench` down is a **construction feature** (spec §11): applying one also appends a `ConstructionFeature` record (measured mass balance at 1500 kg/m³ bulk density, before/after elevation stats, semantic class) to the dataset's feature manifest, which is exported to `features_construction.json` alongside `craters.json` / `rocks.json`. The six kinds from `ramp` down additionally stamp the semantic mask over the samples they shape (`compacted_surface` for ramp/pad, `berm` for spoil_pile/polygonal_fill, `disturbed_regolith` for wheel_track, `trench` for polygonal_cut); the mass-conserving redistribution ring is left unmarked — it is borrowed regolith, not the feature.
 
-`TerrainDelta` fields: `deltaId` (`delta-NNNNNN`), `sequenceNumber`, `timestamp`, `affectedBounds` `{minX,minZ,maxX,maxZ}`, `changedTiles` (tile ids intersecting the bounds, from `tilesInBounds`), `operations`, `previousChecksum` / `resultingChecksum` (SHA-256 of the layer's raw heightfield bytes, `layerChecksum` — deltas chain), and `massBalance` `{removedVolumeM3, depositedVolumeM3, netVolumeM3, relativeError}`. Mass-conserving mode redeposits the displaced volume in an annulus between `radius` and `1.6×radius`; the residual is **measured and reported**, not assumed zero.
+`TerrainDelta` fields: `deltaId` (`delta-NNNNNN`), `sequenceNumber`, `timestamp`, `affectedBounds` `{minX,minZ,maxX,maxZ}`, `changedTiles` (tile ids intersecting the bounds, from `tilesInBounds`), `operations`, `previousChecksum` / `resultingChecksum` (SHA-256 of the layer's raw heightfield bytes, `layerChecksum` — deltas chain), `previousMaskChecksum` / `resultingMaskChecksum` (SHA-256 of the layer's semantic mask, populated for every kind — without them a `semantic_paint`, which moves no height, would produce a delta claiming nothing changed), and `massBalance` `{removedVolumeM3, depositedVolumeM3, netVolumeM3, relativeError}`. Mass-conserving mode redeposits the displaced volume in an annulus between `radius` and `1.6×radius`; the residual is **measured and reported**, not assumed zero.
 
 Undo semantics live in the client, not the protocol: only `raise/lower/berm/trench` have exact inverses from the stored record; `smooth`, `flatten` and `crater_stamp` destroy information and cannot be undone (`INVERTIBLE_KINDS` in `apps/interactive-ui/src/main.ts`; see [known-limitations.md](known-limitations.md)).
 

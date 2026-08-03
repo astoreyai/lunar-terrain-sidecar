@@ -37,10 +37,12 @@ import {
   PerlinNoise2D,
   SeedTree,
   assertFeasible,
+  compileFractal,
+  compileStack,
   estimate,
-  evaluateStack,
+  evaluateCompiledStack,
+  fbmCompiled,
   samplesForExtent,
-  fbm,
   type ProceduralLayerSpec,
 } from '@lts/terrain-core';
 import {
@@ -278,18 +280,37 @@ export async function generateTerrain(
       );
     }
 
+    // Per-layer invariants, hoisted out of the per-sample loop. The compiled
+    // stack resolves the Map lookups, model dispatch and octave ladders once;
+    // per sample it performs the identical IEEE-754 operation sequence
+    // `evaluateStack` did, so the output bits are unchanged (see the
+    // bit-exactness contract in terrain-core/src/noise.ts). A compiled stack
+    // holds only the ENABLED layers; when it is empty `evaluateStack` would
+    // have contributed an exact 0, and `h += 0` never flips the `h !== 0`
+    // write guard (−0 fails it just as +0 does), so skipping the call is
+    // observationally identical.
+    const compiled = compileStack(activeStack, noises, warpNoises);
+    const minX = layer.bounds.minX;
+    const minZ = layer.bounds.minZ;
+    const widthSamples = layer.widthSamples;
+    const heightData = layer.heightData;
+    const elevationSource = layer.masks.elevationSource;
+    const measured = layer.elevationProvenance === 'measured_dem';
+    const measuredPlusSynthetic = ELEVATION_SOURCES.indexOf('measured_plus_synthetic');
+
     for (let row = 0; row < layer.heightSamples; row++) {
-      const z = layer.bounds.minZ + row * res;
-      for (let col = 0; col < layer.widthSamples; col++) {
-        const x = layer.bounds.minX + col * res;
+      const z = minZ + row * res;
+      const rowBase = row * widthSamples;
+      for (let col = 0; col < widthSamples; col++) {
+        const x = minX + col * res;
         let h = 0;
         if (tanSlope !== 0) h -= (x * slopeDirX + z * slopeDirZ) * tanSlope;
-        if (activeStack.length > 0) h += evaluateStack(activeStack, noises, warpNoises, x, z);
+        if (compiled.length > 0) h += evaluateCompiledStack(compiled, x, z);
         if (h !== 0) {
-          const i = row * layer.widthSamples + col;
-          layer.heightData[i] += h;
-          if (layer.elevationProvenance === 'measured_dem') {
-            layer.masks.elevationSource![i] = ELEVATION_SOURCES.indexOf('measured_plus_synthetic');
+          const i = rowBase + col;
+          heightData[i] += h;
+          if (measured) {
+            elevationSource![i] = measuredPlusSynthetic;
           }
         }
       }
@@ -404,12 +425,20 @@ export async function generateTerrain(
         amplitude: config.regolith.microreliefAmplitudeM,
         anisotropy: 1,
       };
+      // Same hoist as base relief: the octave ladder of `p` is invariant, so
+      // it is compiled once; `fbmCompiled` is bit-identical to `fbm`.
+      const compiled = compileFractal(p);
       const res = layer.horizontalResolutionMeters;
+      const minX = layer.bounds.minX;
+      const minZ = layer.bounds.minZ;
+      const widthSamples = layer.widthSamples;
+      const heightData = layer.heightData;
       for (let row = 0; row < layer.heightSamples; row++) {
-        const z = layer.bounds.minZ + row * res;
-        for (let col = 0; col < layer.widthSamples; col++) {
-          const x = layer.bounds.minX + col * res;
-          layer.heightData[row * layer.widthSamples + col] += fbm(noise, x, z, p);
+        const z = minZ + row * res;
+        const rowBase = row * widthSamples;
+        for (let col = 0; col < widthSamples; col++) {
+          const x = minX + col * res;
+          heightData[rowBase + col] += fbmCompiled(noise, x, z, compiled);
         }
       }
     }

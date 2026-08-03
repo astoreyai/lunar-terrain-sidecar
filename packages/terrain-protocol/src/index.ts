@@ -80,6 +80,8 @@ export const METHODS = [
   'terrain.loadConfig',
   'terrain.saveConfig',
   'terrain.applyOperation',
+  'terrain.getOperationLog',
+  'terrain.replayLog',
   'terrain.getTile',
   'terrain.getHeight',
   'terrain.getNormal',
@@ -98,6 +100,16 @@ export type OperationKind =
   | 'lower'
   | 'smooth'
   | 'flatten'
+  // Tilt toward a plane through the click point's current elevation, with
+  // gradient strengthMeters-per-radiusMeters descending along headingDegrees.
+  | 'slope'
+  // Deterministic seeded fBm stamp; requires `noiseSeed` so an identical
+  // operation record reproduces the identical displacement on replay.
+  | 'noise'
+  // Paints ONLY the semantic mask (requires `semanticClass`); zero height
+  // change, so the height checksum is unchanged and the delta's mask
+  // checksums are what record that anything happened.
+  | 'semantic_paint'
   | 'crater_stamp'
   | 'trench'
   | 'berm'
@@ -139,6 +151,17 @@ export interface TerrainOperation {
    * world metres. At least 3 finite vertices; the closing edge is implicit.
    */
   polygonXZ?: number[][];
+  /**
+   * REQUIRED for `noise`: seed string for the fBm stamp. Part of the stored
+   * record, so replaying the same operation reproduces the same displacement.
+   */
+  noiseSeed?: string;
+  /**
+   * REQUIRED for `semantic_paint`: the semantic class to paint, one of
+   * `SEMANTIC_CLASSES` in `@lts/shared-types`. Validated by name with a
+   * structured error listing the valid classes.
+   */
+  semanticClass?: string;
   /** Conserve volume by redistributing the displaced material. */
   massConserving?: boolean;
   /** ISO-8601 instant the operation was recorded. */
@@ -154,6 +177,14 @@ export interface TerrainDelta {
   operations: TerrainOperation[];
   previousChecksum: string;
   resultingChecksum: string;
+  /**
+   * SHA-256 of the layer's semantic mask before/after, populated for every
+   * operation kind. A `semantic_paint` moves no height at all, so without
+   * these the delta would claim nothing changed (identical height checksums)
+   * while the mask had in fact been rewritten.
+   */
+  previousMaskChecksum: string;
+  resultingMaskChecksum: string;
   /** Volume removed and added, m³, and the conservation error. */
   massBalance: {
     removedVolumeM3: number;
