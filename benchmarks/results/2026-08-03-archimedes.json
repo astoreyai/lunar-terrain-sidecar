@@ -1,0 +1,273 @@
+{
+  "suite": "lunar-terrain-sidecar benchmarks (spec §27)",
+  "startedAt": "2026-08-03T20:25:11.729Z",
+  "finishedAt": "2026-08-03T20:27:46.045Z",
+  "mode": "full",
+  "demPath": "/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif",
+  "demPresent": true,
+  "timingPolicy": {
+    "warmup": "one untimed 50 m @ 1 m generation before any timing; per-benchmark untimed warm-ups for export, encode and edit paths",
+    "rule": "probe run first; if < 10 s, two more timed runs and the median of 3 is reported; otherwise the single probe run stands"
+  },
+  "hardware": {
+    "hostname": "archimedes",
+    "platform": "linux 6.1.0-51-amd64 x64",
+    "cpuModel": "Intel(R) Core(TM) i9-14900K",
+    "cpuCount": 32,
+    "totalMemBytes": 134823641088,
+    "nodeVersion": "v20.20.2"
+  },
+  "results": {
+    "generation": [
+      {
+        "key": "small",
+        "label": "small: 100 m × 100 m @ 1 m",
+        "samples": 10201,
+        "layerBytes": 61206,
+        "craters": 44,
+        "rocks": 55319,
+        "runsMs": [
+          714.82429,
+          716.607254,
+          670.1986770000001
+        ],
+        "medianMs": 714.82429,
+        "policy": "median-of-3"
+      },
+      {
+        "key": "medium",
+        "label": "medium: 1 km @ 2 m + 200 m @ 0.2 m",
+        "samples": 1253002,
+        "layerBytes": 7518012,
+        "craters": 6617,
+        "rocks": 320530,
+        "runsMs": [
+          8722.703105,
+          8332.055948000001,
+          9692.383836999998
+        ],
+        "medianMs": 8722.703105,
+        "policy": "median-of-3"
+      },
+      {
+        "key": "demo",
+        "label": "demo-scale: 1 km @ 2 m + 200 m @ 0.2 m + 30 m @ 0.01 m",
+        "samples": 10259003,
+        "layerBytes": 61554018,
+        "craters": 8370,
+        "rocks": 7502,
+        "runsMs": [
+          14871.066185
+        ],
+        "medianMs": 14871.066185,
+        "policy": "single-run (probe ≥ 10 s)"
+      },
+      {
+        "key": "demo-dem",
+        "label": "DEM-grounded demo-scale (LOLA 5 mpp Site01, lat −89.4632°)",
+        "samples": 10259003,
+        "layerBytes": 61554018,
+        "craters": 8087,
+        "rocks": 6603,
+        "runsMs": [
+          18186.091773
+        ],
+        "medianMs": 18186.091773,
+        "policy": "single-run (probe ≥ 10 s)"
+      }
+    ],
+    "stageBreakdown": {
+      "config": "demo-dem",
+      "stagesMs": {
+        "validating": 0.06800099999964004,
+        "allocating": 3.9920510000010836,
+        "ingesting_dem": 937.025622000001,
+        "base_relief": 4824.022171999997,
+        "generating_craters": 10099.455257000001,
+        "regolith_microrelief": 1729.4699679999976,
+        "generating_rocks": 164.94746699999814,
+        "classifying": 423.02542600000015,
+        "solar_geometry": 2.6831880000027013
+      }
+    },
+    "export": {
+      "dataset": "demo",
+      "cases": [
+        {
+          "label": "rf32-only",
+          "artifacts": 12,
+          "totalBytes": 71596323,
+          "exportRunsMs": [
+            504.8001629999999,
+            282.7633080000014,
+            211.90394399999786
+          ],
+          "medianExportMs": 282.7633080000014,
+          "policy": "median-of-3"
+        },
+        {
+          "label": "rf32 + EXR",
+          "artifacts": 15,
+          "totalBytes": 112705214,
+          "exportRunsMs": [
+            589.5617429999984,
+            404.10119300000224,
+            452.80625000000146
+          ],
+          "medianExportMs": 452.80625000000146,
+          "policy": "median-of-3"
+        },
+        {
+          "label": "rf32 + PNG16",
+          "artifacts": 15,
+          "totalBytes": 89689279,
+          "exportRunsMs": [
+            1509.4650269999984,
+            1149.7881520000083,
+            964.8858889999974
+          ],
+          "medianExportMs": 1149.7881520000083,
+          "policy": "median-of-3"
+        },
+        {
+          "label": "rf32 + GLB",
+          "artifacts": 176,
+          "totalBytes": 565718919,
+          "exportRunsMs": [
+            1384.087101000012,
+            1886.9077169999946,
+            1622.768710999997
+          ],
+          "medianExportMs": 1622.768710999997,
+          "policy": "median-of-3"
+        }
+      ]
+    },
+    "tileUpdateLatency": {
+      "layer": "operational-2",
+      "layerSamples": 9006001,
+      "resolutionMeters": 0.01,
+      "operations": 50,
+      "warmupOperations": 3,
+      "p50Ms": 15.965057000008528,
+      "p95Ms": 76.73665199999232,
+      "maxMs": 172.23979300000065,
+      "allMsSorted": [
+        1.801357000003918,
+        2.099792000008165,
+        2.3569960000022547,
+        4.036878999992041,
+        4.5100729999976465,
+        4.832331999990856,
+        5.404328999997233,
+        5.64134699999704,
+        5.913605000008829,
+        5.92131399999198,
+        6.14085999999952,
+        6.386825000008685,
+        7.114937000005739,
+        7.238544000007096,
+        7.849654000005103,
+        8.698448000010103,
+        8.958744000003207,
+        9.635825999997905,
+        10.214349000001675,
+        10.275475000002189,
+        12.004404999999679,
+        12.178339000005508,
+        12.717282999990857,
+        14.340557000003173,
+        15.965057000008528,
+        17.19210899999598,
+        17.956334999995306,
+        18.390597999998135,
+        20.26148299999477,
+        20.393064999996568,
+        22.4148370000039,
+        22.829091000006883,
+        23.78966599999694,
+        32.18313599999237,
+        36.73037299999851,
+        38.62687300000107,
+        41.39936399999715,
+        42.56533199999831,
+        50.882402999995975,
+        52.56128500000341,
+        60.28507899999386,
+        63.61261399999785,
+        64.48855999999796,
+        66.42848000000231,
+        66.89811999999802,
+        71.47011899999052,
+        72.2208030000038,
+        76.73665199999232,
+        77.69504799999413,
+        172.23979300000065
+      ]
+    },
+    "getTileEncode": {
+      "layer": "operational-2",
+      "previewStride": 12,
+      "cases": [
+        {
+          "stride": 1,
+          "samples": 9006001,
+          "base64Bytes": 48032008,
+          "runsMs": [
+            42.06663299999491,
+            49.181299999996554,
+            53.77443000000494
+          ],
+          "medianMs": 49.181299999996554,
+          "policy": "median-of-3"
+        },
+        {
+          "stride": 12,
+          "samples": 63001,
+          "base64Bytes": 336008,
+          "runsMs": [
+            4.428047000008519,
+            0.568689000006998,
+            0.6154749999986961
+          ],
+          "medianMs": 0.6154749999986961,
+          "policy": "median-of-3"
+        }
+      ]
+    },
+    "oneCmFeasibility": [
+      {
+        "key": "feas-25",
+        "label": "25 m × 25 m @ 0.01 m",
+        "width": 25,
+        "samples": 6255001,
+        "heightfieldBytes": 25020004,
+        "layerBytes": 37530006,
+        "craters": 1281,
+        "rocks": 6317,
+        "runsMs": [
+          7147.378444000002,
+          7033.412079999995,
+          8010.851652000012
+        ],
+        "medianMs": 7147.378444000002,
+        "policy": "median-of-3"
+      },
+      {
+        "key": "feas-50",
+        "label": "50 m × 50 m @ 0.01 m",
+        "width": 50,
+        "samples": 25010001,
+        "heightfieldBytes": 100040004,
+        "layerBytes": 150060006,
+        "craters": 5191,
+        "rocks": 23394,
+        "runsMs": [
+          56387.795165999996
+        ],
+        "medianMs": 56387.795165999996,
+        "policy": "single-run (probe ≥ 10 s)"
+      }
+    ]
+  }
+}

@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "vitest bench --run",
+    "bench:terrain": "tsx benchmarks/run.ts",
     "terrain": "tsx apps/headless-server/src/cli.ts",
     "serve": "tsx apps/headless-server/src/cli.ts serve",
     "terrain:reproduce": "tsx apps/headless-server/src/cli.ts reproduce",

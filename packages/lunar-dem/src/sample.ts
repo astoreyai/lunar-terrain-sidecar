@@ -11,9 +11,10 @@
  * This module removes the curvature during ingestion, so a stored layer is a
  * true tangent plane and a flat mesh in it really is flat. The consequence is
  * that **horizon ray-marching over an ingested layer must not re-apply
- * curvature** — it is already baked in. `TerrainLayer.curvatureRemoved` records
- * this, and `horizonProfile` defaults to `bodyRadiusM: Infinity` so the double
- * count cannot happen by omission.
+ * curvature** — it is already baked in. That is why `horizonProfile` defaults
+ * to `bodyRadiusM: Infinity`: the double count cannot happen by omission.
+ * (No per-layer flag records the removal; every layer this pipeline produces
+ * is a tangent plane, and the export manifest's `datum_note` says so.)
  */
 
 import { TerrainError, ERROR_CODES } from '@lts/shared-types';

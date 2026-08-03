@@ -10,6 +10,16 @@
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+/**
+ * Protocol major version this client speaks.
+ *
+ * The protocol docs declare a mismatch a hard error; a client that merely
+ * records the hello version and carries on would mis-drive terrain generation
+ * with silently wrong message shapes. Major-version disagreement therefore
+ * closes the connection.
+ */
+export const CLIENT_PROTOCOL_MAJOR = 1;
+
 export interface ProgressEvent {
   jobId: string;
   stage: string;
@@ -124,6 +134,15 @@ export class SidecarClient {
     if (msg.event === 'terrain.hello') {
       this.protocolVersion = String(msg.protocolVersion ?? '');
       this.generatorVersion = String(msg.generatorVersion ?? '');
+      const major = Number(this.protocolVersion.split('.')[0]);
+      if (!Number.isFinite(major) || major !== CLIENT_PROTOCOL_MAJOR) {
+        this.setState(
+          'error',
+          `protocol mismatch: sidecar speaks ${this.protocolVersion || '(unknown)'}, ` +
+            `this client speaks ${CLIENT_PROTOCOL_MAJOR}.x`,
+        );
+        this.disconnect();
+      }
       return;
     }
     if (msg.event === 'terrain.progress') {

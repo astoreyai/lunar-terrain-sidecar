@@ -20,6 +20,12 @@ signal response(id: int, result: Variant, error: Dictionary)
 
 enum State { DISCONNECTED, CONNECTING, CONNECTED }
 
+## Protocol major version this client speaks. A sidecar answering with a
+## different major is disconnected immediately — the protocol spec declares a
+## mismatch a hard error, and continuing with wrong message shapes would
+## mis-drive generation rather than fail cleanly.
+const CLIENT_PROTOCOL_MAJOR := 1
+
 var state: int = State.DISCONNECTED
 var protocol_version: String = ""
 var generator_version: String = ""
@@ -101,6 +107,16 @@ func _handle_packet(text: String) -> void:
 	if event == "terrain.hello":
 		protocol_version = String(msg.get("protocolVersion", ""))
 		generator_version = String(msg.get("generatorVersion", ""))
+		var major := int(protocol_version.get_slice(".", 0)) if protocol_version.contains(".") else -1
+		if major != CLIENT_PROTOCOL_MAJOR:
+			last_error = "protocol mismatch: sidecar %s vs client %d.x" % [
+				protocol_version if not protocol_version.is_empty() else "(unknown)",
+				CLIENT_PROTOCOL_MAJOR,
+			]
+			state = State.DISCONNECTED
+			_fail_inflight(last_error)
+			_socket.close(1002, "protocol mismatch")
+			connection_failed.emit(last_error)
 		return
 	if event == "terrain.progress":
 		progress.emit(
