@@ -1,0 +1,254 @@
+/* Engineering interface, not a consumer app: dense, monospaced readouts, no
+   decorative chrome competing with the viewport. Dark throughout because the
+   subject is a black-sky airless scene and a light chrome would wash out the
+   grazing-light contrast that matters here. */
+
+:root {
+  --bg: #0d0f12;
+  --panel: #14171c;
+  --panel-2: #1b1f26;
+  --line: #262c35;
+  --text: #d6dae0;
+  --muted: #8b939e;
+  --accent: #4aa3ff;
+  --accent-2: #00ff9f;
+  --warn: #ffc400;
+  --danger: #ff5c5c;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.45 var(--mono);
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: 38px 1fr 26px;
+  height: 100vh;
+}
+
+/* ---------------------------------------------------------------- toolbar */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 10px;
+  letter-spacing: 0.02em;
+}
+
+.spacer { flex: 1; }
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:active { background: #232935; }
+button.primary { background: #14324f; border-color: var(--accent); color: #cfe6ff; }
+button.active { background: #143a2c; border-color: var(--accent-2); color: #ccffe9; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+input[type="text"], input[type="number"], select {
+  background: #0f1216;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font: inherit;
+  width: 100%;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#sidecar-url { width: 190px; }
+
+.indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+}
+.indicator .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted);
+}
+.indicator.connected { color: var(--accent-2); border-color: #1d4b3a; }
+.indicator.connected .dot { background: var(--accent-2); box-shadow: 0 0 6px var(--accent-2); }
+.indicator.connecting .dot { background: var(--warn); }
+.indicator.error { color: var(--danger); border-color: #4b1d1d; }
+.indicator.error .dot { background: var(--danger); }
+
+/* ------------------------------------------------------------------ body */
+
+#body {
+  display: grid;
+  grid-template-columns: 290px 1fr 260px;
+  min-height: 0;
+}
+
+#left-panel, #right-panel {
+  background: var(--panel);
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+#right-panel { border-right: none; border-left: 1px solid var(--line); }
+
+.panel {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px 10px;
+}
+
+.panel h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.panel label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.panel label input,
+.panel label select { margin-top: 2px; }
+
+.panel label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+.panel label.check input { width: auto; margin: 0; }
+
+.note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.row { display: flex; gap: 6px; }
+.row button { flex: 1; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.chips button { padding: 3px 8px; font-size: 11px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+  padding: 2px 4px;
+}
+td { padding: 2px 4px; border-bottom: 1px solid #1c2027; }
+tr.role-operational td:first-child { color: var(--accent-2); }
+tr.role-mission td:first-child { color: var(--warn); }
+tr.role-context td:first-child { color: var(--accent); }
+
+.readout { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 0; }
+.readout dt { color: var(--muted); font-size: 11px; }
+.readout dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.log {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: #0b0d10;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  max-height: 170px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.log.pass { color: var(--accent-2); }
+.log.fail { color: var(--danger); }
+
+/* -------------------------------------------------------------- viewport */
+
+#viewport { position: relative; min-width: 0; background: #000; }
+#canvas { display: block; width: 100%; height: 100%; }
+
+#legend {
+  position: absolute;
+  left: 12px; bottom: 12px;
+  padding: 6px 10px;
+  background: rgba(13, 15, 18, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+#legend strong { font-size: 11px; }
+#legend span { color: var(--muted); font-size: 10.5px; }
+
+#progress-overlay {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 320px;
+  padding: 14px 16px;
+  background: rgba(13, 15, 18, 0.94);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  text-align: center;
+}
+#progress-overlay .bar {
+  height: 6px;
+  background: #0b0d10;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+#progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s linear; }
+#progress-stage { color: var(--muted); font-size: 11px; }
+
+/* ------------------------------------------------------------ status bar */
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+#status-bar b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }

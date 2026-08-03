@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "declaration": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@lts/shared-types": ["packages/shared-types/src/index.ts"],
+      "@lts/terrain-core": ["packages/terrain-core/src/index.ts"],
+      "@lts/terrain-pipeline": ["packages/terrain-pipeline/src/index.ts"],
+      "@lts/lunar-solar": ["packages/lunar-solar/src/index.ts"],
+      "@lts/lunar-dem": ["packages/lunar-dem/src/index.ts"],
+      "@lts/lunar-features": ["packages/lunar-features/src/index.ts"],
+      "@lts/terrain-export": ["packages/terrain-export/src/index.ts"],
+      "@lts/terrain-validation": ["packages/terrain-validation/src/index.ts"],
+      "@lts/terrain-protocol": ["packages/terrain-protocol/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "tests/**/*.ts", "benchmarks/**/*.ts"]
+}

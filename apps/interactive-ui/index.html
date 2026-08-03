@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lunar Terrain Sidecar</title>
+    <!-- Inline so the page makes no implicit /favicon.ico request, which the
+         dev server answers with a 404 and Chrome logs as a console error. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230d0f12'/%3E%3Ccircle cx='16' cy='17' r='9' fill='%234a4f57'/%3E%3Ccircle cx='12' cy='14' r='2.4' fill='%232b2f35'/%3E%3Ccircle cx='20' cy='20' r='1.8' fill='%232b2f35'/%3E%3Ccircle cx='19' cy='12' r='1.2' fill='%232b2f35'/%3E%3Cpath d='M2 26 L30 22' stroke='%2300ff9f' stroke-width='1.2' fill='none'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Toolbar (spec §23) -->
+      <header id="toolbar">
+        <span class="brand">lunar-terrain-sidecar</span>
+        <button id="btn-new" type="button">New</button>
+        <button id="btn-load" type="button">Load</button>
+        <button id="btn-save" type="button">Save</button>
+        <button id="btn-estimate" type="button">Estimate</button>
+        <button id="btn-generate" type="button" class="primary">Generate</button>
+        <button id="btn-export" type="button">Export</button>
+        <button id="btn-validate" type="button">Validate</button>
+        <span class="spacer"></span>
+        <input id="sidecar-url" type="text" value="ws://127.0.0.1:8765" spellcheck="false" />
+        <button id="btn-connect" type="button">Connect</button>
+        <span id="connection-indicator" class="indicator disconnected" title="sidecar connection">
+          <span class="dot"></span><span id="connection-label">disconnected</span>
+        </span>
+      </header>
+
+      <div id="body">
+        <!-- Left: terrain configuration -->
+        <aside id="left-panel">
+          <section class="panel" data-panel="project">
+            <h2>Project</h2>
+            <label>Terrain id<input id="cfg-terrain-id" type="text" value="south_pole_site_01" /></label>
+            <label>Seed<input id="cfg-seed" type="text" value="lunar-south-pole-site-01" /></label>
+            <label>Preset
+              <select id="cfg-preset">
+                <option value="south_pole_navigation">South-Pole Navigation Site</option>
+                <option value="rover_test_pad">Rover Test Pad</option>
+                <option value="excavation_test_site">Excavation Test Site</option>
+                <option value="roughness_stress">Roughness Stress Test</option>
+                <option value="flat_baseline">Flat Construction Baseline</option>
+              </select>
+            </label>
+            <label>Site latitude °<input id="cfg-lat" type="number" step="0.0001" value="-89.4632" /></label>
+            <label>Site longitude °<input id="cfg-lon" type="number" step="0.0001" value="-137.4896" /></label>
+          </section>
+
+          <section class="panel" data-panel="layers">
+            <h2>Terrain layers</h2>
+            <table id="layer-table">
+              <thead><tr><th>role</th><th>size m</th><th>m/sample</th><th>samples</th></tr></thead>
+              <tbody id="layer-rows"></tbody>
+            </table>
+            <label>Selected layer
+              <select id="cfg-selected-layer"></select>
+            </label>
+          </section>
+
+          <section class="panel" data-panel="dem">
+            <h2>Source DEM</h2>
+            <label class="check"><input id="cfg-dem-enabled" type="checkbox" checked /> Ground in real LOLA data</label>
+            <label>DEM path<input id="cfg-dem-path" type="text" value="/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif" spellcheck="false" /></label>
+            <label>Effective resolution m<input id="cfg-dem-effres" type="number" step="0.5" value="17.5" /></label>
+            <p class="note">Synthesis is confined below this scale so real and synthetic features never double-count. If the file is missing, generation fails rather than inventing elevations.</p>
+          </section>
+
+          <section class="panel" data-panel="procedural">
+            <h2>Procedural stack</h2>
+            <div id="procedural-rows"></div>
+            <p class="note">Layers whose wavelength exceeds the DEM's effective resolution are suppressed automatically.</p>
+          </section>
+
+          <section class="panel" data-panel="craters">
+            <h2>Crater population</h2>
+            <label>Model
+              <select id="cfg-crater-model">
+                <option value="production_csfd">Neukum production + Xiao &amp; Werner cap</option>
+                <option value="power_law">Free power law (§8)</option>
+              </select>
+            </label>
+            <label>Surface age Ga<input id="cfg-crater-age" type="number" step="0.1" value="3.5" /></label>
+            <label>Min diameter m<input id="cfg-crater-dmin" type="number" step="0.1" value="0.2" /></label>
+            <label>Max diameter m<input id="cfg-crater-dmax" type="number" step="1" value="35" /></label>
+            <label>Mean degradation<input id="cfg-crater-degradation" type="range" min="0" max="1" step="0.01" value="0.45" /></label>
+          </section>
+
+          <section class="panel" data-panel="rocks">
+            <h2>Rocks</h2>
+            <label>Model
+              <select id="cfg-rock-model">
+                <option value="golombek_sfd">Golombek exponential SFD</option>
+                <option value="power_law">Free power law (§9)</option>
+              </select>
+            </label>
+            <label>Area coverage k<input id="cfg-rock-k" type="number" step="0.01" value="0.05" /></label>
+            <label>Min diameter m<input id="cfg-rock-dmin" type="number" step="0.01" value="0.05" /></label>
+            <label>Physical above m<input id="cfg-rock-physical" type="number" step="0.01" value="0.15" /></label>
+          </section>
+
+          <section class="panel" data-panel="editing">
+            <h2>Editing tools</h2>
+            <div id="brush-buttons" class="chips">
+              <button type="button" data-brush="raise">raise</button>
+              <button type="button" data-brush="lower">lower</button>
+              <button type="button" data-brush="smooth">smooth</button>
+              <button type="button" data-brush="flatten">flatten</button>
+              <button type="button" data-brush="crater_stamp">crater</button>
+              <button type="button" data-brush="trench">trench</button>
+              <button type="button" data-brush="berm">berm</button>
+            </div>
+            <label>Radius m<input id="brush-radius" type="number" step="0.1" value="2" /></label>
+            <label>Strength m<input id="brush-strength" type="number" step="0.05" value="0.3" /></label>
+            <label>Falloff<input id="brush-falloff" type="number" step="0.1" value="2" /></label>
+            <label class="check"><input id="brush-mass-conserving" type="checkbox" /> Mass conserving (cut = fill)</label>
+            <div class="row">
+              <button id="btn-undo" type="button">Undo</button>
+              <button id="btn-redo" type="button">Redo</button>
+            </div>
+            <p class="note" id="edit-status">Edits are stored as replayable operations, never as mutated meshes.</p>
+          </section>
+
+          <section class="panel" data-panel="visualization">
+            <h2>Visualization</h2>
+            <label>Overlay
+              <select id="viz-overlay">
+                <option value="lit">Lit regolith</option>
+                <option value="elevation">Elevation heatmap</option>
+                <option value="slope">Slope heatmap</option>
+                <option value="roughness">Roughness heatmap</option>
+                <option value="traversability">Traversability (heuristic)</option>
+                <option value="semantic">Semantic classes</option>
+              </select>
+            </label>
+            <label>Camera
+              <select id="viz-camera">
+                <option value="orbit">Orbit</option>
+                <option value="topdown">Top-down orthographic</option>
+                <option value="first_person">First person</option>
+                <option value="rover">Rover height (1.0 m)</option>
+              </select>
+            </label>
+            <label class="check"><input id="viz-wireframe" type="checkbox" /> Wireframe</label>
+            <label class="check"><input id="viz-grid" type="checkbox" /> Grid</label>
+            <label class="check"><input id="viz-tilebounds" type="checkbox" checked /> Layer boundaries</label>
+            <label class="check"><input id="viz-contours" type="checkbox" /> Contour lines</label>
+            <label class="check"><input id="viz-earthshine" type="checkbox" /> Earthshine (non-physical fill)</label>
+          </section>
+
+          <section class="panel" data-panel="solar">
+            <h2>Solar geometry</h2>
+            <label>Epoch UTC<input id="cfg-epoch" type="text" value="2026-08-03T00:00:00Z" spellcheck="false" /></label>
+            <button id="btn-solar" type="button">Recompute from ephemeris</button>
+            <dl class="readout">
+              <dt>elevation</dt><dd id="solar-elevation">—</dd>
+              <dt>azimuth</dt><dd id="solar-azimuth">—</dd>
+              <dt>sub-solar lat</dt><dd id="solar-subsolar">—</dd>
+              <dt>1 m shadow</dt><dd id="solar-shadow">—</dd>
+            </dl>
+            <p class="note">At a lunar pole the Sun stays within 1.54° of the horizon, so elevation and azimuth are not independent — both come from the ephemeris.</p>
+          </section>
+
+          <section class="panel" data-panel="export">
+            <h2>Export</h2>
+            <label>Output directory<input id="cfg-output" type="text" value="./generated/ui_site" spellcheck="false" /></label>
+            <div class="chips">
+              <label class="check"><input id="fmt-rf32" type="checkbox" checked disabled /> rf32</label>
+              <label class="check"><input id="fmt-exr" type="checkbox" checked /> EXR</label>
+              <label class="check"><input id="fmt-png" type="checkbox" checked /> PNG16</label>
+              <label class="check"><input id="fmt-glb" type="checkbox" checked /> GLB tiles</label>
+            </div>
+            <pre id="export-result" class="log"></pre>
+          </section>
+
+          <section class="panel" data-panel="validation">
+            <h2>Validation</h2>
+            <pre id="validation-result" class="log">not run</pre>
+          </section>
+
+          <section class="panel" data-panel="performance">
+            <h2>Performance</h2>
+            <dl class="readout">
+              <dt>fps</dt><dd id="perf-fps">—</dd>
+              <dt>draw calls</dt><dd id="perf-draws">—</dd>
+              <dt>triangles</dt><dd id="perf-tris">—</dd>
+              <dt>generate</dt><dd id="perf-generate">—</dd>
+            </dl>
+          </section>
+        </aside>
+
+        <!-- Centre: viewport -->
+        <main id="viewport">
+          <canvas id="canvas"></canvas>
+          <div id="legend">
+            <strong id="legend-title">Lit regolith</strong>
+            <span id="legend-note"></span>
+          </div>
+          <div id="progress-overlay" hidden>
+            <div class="bar"><div id="progress-fill"></div></div>
+            <span id="progress-stage">—</span>
+          </div>
+        </main>
+
+        <!-- Right: inspector -->
+        <aside id="right-panel">
+          <section class="panel">
+            <h2>Inspector</h2>
+            <dl class="readout">
+              <dt>terrain</dt><dd id="insp-terrain">—</dd>
+              <dt>seed</dt><dd id="insp-seed">—</dd>
+              <dt>site</dt><dd id="insp-site">—</dd>
+              <dt>layers</dt><dd id="insp-layers">—</dd>
+              <dt>craters</dt><dd id="insp-craters">—</dd>
+              <dt>rocks</dt><dd id="insp-rocks">—</dd>
+            </dl>
+          </section>
+
+          <section class="panel">
+            <h2>Selected point</h2>
+            <dl class="readout">
+              <dt>x, z</dt><dd id="insp-xz">—</dd>
+              <dt>elevation</dt><dd id="insp-elevation">—</dd>
+              <dt>slope</dt><dd id="insp-slope">—</dd>
+              <dt>semantic</dt><dd id="insp-semantic">—</dd>
+              <dt>traversability</dt><dd id="insp-trav">—</dd>
+            </dl>
+            <p class="note">Traversability is a synthetic heuristic, not a validated terramechanics prediction.</p>
+          </section>
+
+          <section class="panel">
+            <h2>Coordinate system</h2>
+            <pre id="insp-coords" class="log">right-handed, Y-up
++X east · +Y up · +Z south
+north = -Z
+metres throughout</pre>
+          </section>
+
+          <section class="panel">
+            <h2>Provenance</h2>
+            <pre id="insp-provenance" class="log">—</pre>
+          </section>
+        </aside>
+      </div>
+
+      <!-- Status bar (spec §23: always visible) -->
+      <footer id="status-bar">
+        <span>job <b id="status-job">idle</b></span>
+        <span>memory <b id="status-memory">—</b></span>
+        <span>layer <b id="status-layer">—</b></span>
+        <span>resolution <b id="status-resolution">—</b></span>
+        <span>dimensions <b id="status-dimensions">—</b></span>
+        <span>cursor <b id="status-cursor">—</b></span>
+        <span>elevation <b id="status-elevation">—</b></span>
+        <span>seed <b id="status-seed">—</b></span>
+        <span>sidecar <b id="status-sidecar">disconnected</b></span>
+      </footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

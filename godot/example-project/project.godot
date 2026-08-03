@@ -1,0 +1,14 @@
+; Godot project for the lunar-terrain-sidecar round-trip acceptance test.
+; Runs headless; no rendering is required for the collision-agreement check.
+
+config_version=5
+
+[application]
+
+config/name="Lunar Terrain Round Trip"
+config/features=PackedStringArray("4.4", "Forward Plus")
+run/disable_stdout=false
+
+[physics]
+
+3d/default_gravity=1.62

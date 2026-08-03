@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "1.0.0",
+  "terrainId": "south_pole_site_01",
+  "seed": "lunar-south-pole-site-01",
+  "outputDirectory": "./generated/south_pole_site_01",
+
+  "site": {
+    "latitudeDeg": -89.4631639,
+    "longitudeDeg": -137.4895528,
+    "datumElevationM": 0
+  },
+
+  "layers": [
+    { "role": "context", "widthMeters": 1000, "lengthMeters": 1000, "resolutionMeters": 2.0 },
+    { "role": "mission", "widthMeters": 200, "lengthMeters": 200, "resolutionMeters": 0.2 },
+    { "role": "operational", "widthMeters": 30, "lengthMeters": 30, "resolutionMeters": 0.01 }
+  ],
+  "tileSizeSamples": 256,
+
+  "dem": {
+    "enabled": true,
+    "path": "/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif",
+    "applyToRoles": ["context", "mission", "operational"],
+    "effectiveResolutionMeters": 17.5
+  },
+
+  "proceduralStack": [
+    {
+      "id": "sub_dem_relief",
+      "model": "warped_fbm",
+      "enabled": true,
+      "fractal": {
+        "octaves": 6,
+        "lacunarity": 2.0,
+        "persistence": 0.5,
+        "frequency": 0.2,
+        "amplitude": 0.12,
+        "anisotropy": 1.0
+      },
+      "warpStrengthM": 1.5,
+      "warpFrequency": 0.06
+    },
+    {
+      "id": "fine_roughness",
+      "model": "fbm",
+      "enabled": true,
+      "fractal": {
+        "octaves": 5,
+        "lacunarity": 2.1,
+        "persistence": 0.55,
+        "frequency": 2.0,
+        "amplitude": 0.02,
+        "anisotropy": 1.0
+      }
+    }
+  ],
+
+  "regionalSlopeDeg": 0,
+  "regionalSlopeAzimuthDeg": 0,
+
+  "craters": {
+    "enabled": true,
+    "model": "production_csfd",
+    "minimumDiameterMeters": 0.2,
+    "maximumDiameterMeters": 35,
+    "surfaceAgeGyr": 3.5,
+    "meanDegradation": 0.45,
+    "degradationSpread": 0.3,
+    "ellipticalFraction": 0.15,
+    "clustering": 0.0
+  },
+
+  "rocks": {
+    "enabled": true,
+    "model": "golombek_sfd",
+    "cumulativeFractionalAreaCovered": 0.05,
+    "minimumDiameterMeters": 0.05,
+    "maximumDiameterMeters": 2.5,
+    "physicalMinimumDiameterMeters": 0.15,
+    "meanBuriedFraction": 0.35,
+    "angularity": 0.6,
+    "craterRimEnhancement": 4,
+    "maximumSlopeDeg": 35
+  },
+
+  "regolith": {
+    "enabled": true,
+    "microreliefAmplitudeM": 0.012,
+    "microreliefWavelengthM": 0.35,
+    "maximumResolutionMeters": 0.1
+  },
+
+  "solar": {
+    "mode": "ephemeris",
+    "epochUtc": "2026-08-03T00:00:00Z",
+    "computeHorizon": true,
+    "horizonAzimuthBins": 360
+  },
+
+  "limits": {
+    "profile": "safe",
+    "maxBytes": 2147483648,
+    "maxSamplesPerLayer": 400000000,
+    "maxTiles": 65536
+  },
+
+  "bulkDensityKgM3": 1500
+}

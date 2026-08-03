@@ -1,0 +1,42 @@
+{
+  "name": "lunar-terrain-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Three.js lunar terrain generation, authoring and preprocessing sidecar for a Godot-based lunar robotics simulation.",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "vitest bench --run",
+    "terrain": "tsx apps/headless-server/src/cli.ts",
+    "serve": "tsx apps/headless-server/src/cli.ts serve",
+    "terrain:reproduce": "tsx apps/headless-server/src/cli.ts reproduce",
+    "ui": "vite --config apps/interactive-ui/vite.config.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/three": "^0.185.3",
+    "@types/ws": "^8.18.1",
+    "playwright": "^1.62.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "geotiff": "^2.1.3",
+    "three": "^0.171.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  }
+}

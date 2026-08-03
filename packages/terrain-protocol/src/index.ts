@@ -1,0 +1,145 @@
+/**
+ * `@lts/terrain-protocol` — the versioned sidecar protocol (spec §16).
+ *
+ * JSON-RPC 2.0 over WebSocket. The protocol version is negotiated on connect
+ * and a mismatch is a hard error, not a warning: a Godot client built against a
+ * different message shape will silently mis-drive terrain generation otherwise.
+ */
+
+export const PROTOCOL_VERSION = '1.0.0';
+export const DEFAULT_PORT = 8765;
+
+export interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id?: string | number | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JsonRpcSuccess {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  result: unknown;
+}
+
+export interface JsonRpcFailure {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  error: { code: number; message: string; data?: unknown };
+}
+
+export type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
+
+/** JSON-RPC reserved codes plus this protocol's application range. */
+export const RPC_CODES = {
+  PARSE_ERROR: -32700,
+  INVALID_REQUEST: -32600,
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
+  INTERNAL_ERROR: -32603,
+  /** Application errors carry the TerrainError code in `data.code`. */
+  TERRAIN_ERROR: -32000,
+} as const;
+
+/** Server-pushed progress notification (spec §16). */
+export interface ProgressEvent {
+  event: 'terrain.progress';
+  jobId: string;
+  stage: string;
+  progress: number;
+  detail?: string;
+}
+
+export type JobStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
+
+export interface JobRecord {
+  jobId: string;
+  status: JobStatus;
+  seed: string;
+  terrainId: string;
+  stage: string;
+  progress: number;
+  startedAt: string;
+  finishedAt?: string;
+  outputDirectory?: string;
+  error?: { code: string; message: string; details: Record<string, unknown> };
+}
+
+/** Every method this server implements. Anything else is METHOD_NOT_FOUND. */
+export const METHODS = [
+  'terrain.health',
+  'terrain.capabilities',
+  'terrain.validateConfig',
+  'terrain.estimate',
+  'terrain.generate',
+  'terrain.cancel',
+  'terrain.getStatus',
+  'terrain.getManifest',
+  'terrain.getDataset',
+  'terrain.export',
+  'terrain.loadConfig',
+  'terrain.saveConfig',
+  'terrain.applyOperation',
+  'terrain.getTile',
+  'terrain.getHeight',
+  'terrain.getNormal',
+  'terrain.getSemanticClass',
+  'terrain.getTraversability',
+  'terrain.getSolar',
+  'terrain.getHorizon',
+  'terrain.shutdown',
+] as const;
+
+export type Method = (typeof METHODS)[number];
+
+/** Terrain edit operations, stored as replayable records (spec §12, §19). */
+export type OperationKind =
+  | 'raise'
+  | 'lower'
+  | 'smooth'
+  | 'flatten'
+  | 'crater_stamp'
+  | 'trench'
+  | 'berm';
+
+export interface TerrainOperation {
+  operationId: string;
+  kind: OperationKind;
+  /** Layer the operation applies to. */
+  layerId: string;
+  /** Centre in local metres. */
+  centerXMeters: number;
+  centerZMeters: number;
+  radiusMeters: number;
+  /** Signed magnitude, metres. Interpretation depends on `kind`. */
+  strengthMeters: number;
+  /** Falloff exponent; 1 is linear, 2 is smooth. */
+  falloff: number;
+  /** Target elevation for `flatten`, metres. */
+  targetElevationMeters?: number;
+  /** For trench/berm: direction and length. */
+  headingDegrees?: number;
+  lengthMeters?: number;
+  /** Conserve volume by redistributing the displaced material. */
+  massConserving?: boolean;
+  /** ISO-8601 instant the operation was recorded. */
+  timestamp: string;
+}
+
+export interface TerrainDelta {
+  deltaId: string;
+  sequenceNumber: number;
+  timestamp: string;
+  affectedBounds: { minX: number; minZ: number; maxX: number; maxZ: number };
+  changedTiles: string[];
+  operations: TerrainOperation[];
+  previousChecksum: string;
+  resultingChecksum: string;
+  /** Volume removed and added, m³, and the conservation error. */
+  massBalance: {
+    removedVolumeM3: number;
+    depositedVolumeM3: number;
+    netVolumeM3: number;
+    relativeError: number;
+  };
+}
