@@ -8,7 +8,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { WebSocketServer } from 'ws';
 import { startServer } from '../apps/headless-server/src/server.js';
@@ -16,6 +16,8 @@ import { METHODS, PROTOCOL_VERSION, RPC_CODES } from '@lts/terrain-protocol';
 
 const PORT = 8791;
 const WORK = resolve(__dirname, '../.test-artifacts/protocol');
+/** Real DEM used only by the concurrency test (its yield opens the race window). */
+const CONCURRENCY_DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
 
 let server: WebSocketServer;
 let socket: WebSocket;
@@ -294,7 +296,15 @@ describe('sidecar protocol', () => {
     expect(r.validation.errors).toBe(0);
   });
 
-  it('refuses to run two generation jobs concurrently', async () => {
+  // Skips (loudly, never fake-passing) when the DEM is absent: the overlap
+  // window this test needs only exists because the DEM read yields the event
+  // loop — see the comment inside. With the DEM missing, the job fails
+  // synchronously at ingesting_dem before the second request is even parsed,
+  // so BOTH generates are accepted and the assertion is meaningless (verified
+  // by running with the dataset directory masked).
+  it.skipIf(!existsSync(CONCURRENCY_DEM))(
+    'refuses to run two generation jobs concurrently',
+    async () => {
     // The session holds ONE dataset; a second concurrent generate would race
     // to install its result and could silently destroy acknowledged edits.
     //
@@ -308,7 +318,7 @@ describe('sidecar protocol', () => {
       terrainId: 'protocol_concurrent',
       dem: {
         enabled: true,
-        path: '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif',
+        path: CONCURRENCY_DEM,
         applyToRoles: ['context', 'operational'],
         effectiveResolutionMeters: 17.5,
       },

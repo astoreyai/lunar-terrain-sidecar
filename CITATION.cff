@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "lunar-terrain-sidecar"
+version: 0.1.0
+date-released: 2026-08-03
+license: MIT
+authors:
+  - family-names: Storey
+    given-names: Aaron
+    email: storeyaw@clarkson.edu
+    affiliation: "Clarkson University"
+repository-code: "https://github.com/astoreyai/lunar-terrain-sidecar"
+abstract: >-
+  Terrain generation, authoring and preprocessing sidecar for a Godot-based
+  lunar robotics simulation, focused on the lunar south pole with a real solar
+  ephemeris. It is not the physics engine: it produces terrain from real
+  LOLA/PGDA digital elevation models plus literature-anchored crater and rock
+  populations, with deterministic byte-identical reproduction; Godot remains
+  the simulation authority.
+keywords:
+  - lunar terrain
+  - digital elevation model
+  - LOLA
+  - solar ephemeris
+  - permanently shadowed regions
+  - robotics simulation
+  - Godot
+  - procedural generation
+  - reproducibility

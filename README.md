@@ -61,6 +61,25 @@ Every export carries a per-sample `elevation_source.r8` mask recording which
 elevations are measurement and which are synthesis. If a configured DEM is
 missing, generation **fails** rather than substituting invented elevations.
 
+## Getting the data
+
+The kernels and DEMs are public NASA products, not vendored in the repo:
+
+```bash
+bash scripts/fetch-data.sh          # downloads to ./data, verifies SHA-256
+export LTS_SPICE_DIR="$PWD/data/spice_kernels"
+```
+
+The script fetches the JPL DE440 kernels (NAIF) and the PGDA/LOLA 5 m/px
+Site01 DEM (~87 MB total), verifies every checksum against the copies this
+repository was validated with, and prints the config/env lines that point the
+tools at the downloads. `LTS_SPICE_DIR` overrides the default kernel
+directory; DEM paths live in each site config (`dem.path`).
+
+The CLI runs through `tsx` (Node ≥ 20 required): `npm run terrain -- <cmd>`.
+The `bin` entry in package.json points at the TypeScript source and is only
+runnable where `tsx` is installed; there is no compiled standalone binary.
+
 ## Quick start
 
 ```bash
@@ -152,7 +171,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 215 tests, 12 files, all passing.
+**Test suite**: 220 tests, 12 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
@@ -220,6 +239,14 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
   reference implementation and the only implementation.
 - **Rock count estimates are upper bounds**, taken before slope and
   crater-rim-density rejection, which depend on terrain not yet generated.
+
+## Citing
+
+If you use this software, please cite it via [`CITATION.cff`](CITATION.cff)
+(Aaron Storey, *lunar-terrain-sidecar*, v0.1.0, MIT). A JOSS software paper
+draft is in [`paper/paper.md`](paper/paper.md). Please also credit the data:
+LOLA (Smith et al. 2010), the PGDA polar DEMs (Barker et al. 2021), and JPL
+DE440 (Park et al. 2021).
 
 ## Layout
 

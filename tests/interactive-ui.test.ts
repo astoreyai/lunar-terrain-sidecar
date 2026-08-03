@@ -18,6 +18,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { WebSocketServer } from 'ws';
 import { startServer } from '../apps/headless-server/src/server.js';
+import { PerlinNoise2D, deriveSeed } from '../packages/terrain-core/src/index.js';
+import { buildPermTable } from '../apps/interactive-ui/src/gpuPreview.js';
 
 const REPO = resolve(__dirname, '..');
 const UI_ROOT = join(REPO, 'apps/interactive-ui');
@@ -131,6 +133,14 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
         '--enable-unsafe-swiftshader',
         '--disable-gpu-sandbox',
         '--no-sandbox',
+        // Expose navigator.gpu for the (non-authoritative) GPU preview tests.
+        // Verified empirically on this machine (Chrome 151 headless): without
+        // the flag navigator.gpu is absent entirely; with it, a plain
+        // requestAdapter() still returns null but the SwiftShader fallback
+        // adapter (forceFallbackAdapter: true) yields a working compute
+        // device. '--enable-features=Vulkan' proved unnecessary and would
+        // clobber Playwright's own --enable-features switch.
+        '--enable-unsafe-webgpu',
       ],
     });
     page = await browser.newPage({ viewport: { width: 1600, height: 950 } });
@@ -533,5 +543,190 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
       'Screenshots from tests/interactive-ui.test.ts, rendered in headless Chromium\n' +
         'with SwiftShader over terrain generated from the real LOLA Site01 DEM.\n',
     );
+  });
+
+  // ------------------------------------------------------------ GPU preview
+  //
+  // The WebGPU preview is explicitly NON-AUTHORITATIVE (spec §20/§33): these
+  // tests assert both the supported and the unsupported path deterministically,
+  // keyed on what the browser actually provides. `webgpuUsable` records
+  // whether a real compute device came up, and gates the supported-path
+  // assertions and the 08 screenshot.
+
+  let webgpuUsable = false;
+
+  const previewActive = () =>
+    page.evaluate(
+      () => (window as unknown as { __lts: { previewActive: boolean } }).__lts.previewActive,
+    );
+
+  it('GPU preview toggle reports availability honestly', async () => {
+    // Branch on the OUTCOME the UI reports, not on navigator.gpu presence:
+    // headless Chrome under SwiftShader exposes the API and then fails (or
+    // formerly hung) at adapter init — a third case the presence check cannot
+    // see. Whatever happens, the status line must reach a terminal state:
+    // "GPU preview ready" or "WebGPU not available…(reason)". An eternal
+    // "initialising" is the failure this test exists to catch.
+    await page.check('#viz-gpu-preview');
+    const deadline = Date.now() + 45_000;
+    let status = '';
+    while (Date.now() < deadline) {
+      status = await textOf(page, '#gpu-preview-status');
+      if (status.includes('GPU preview ready') || status.includes('WebGPU not available')) break;
+      await page.waitForTimeout(300);
+    }
+    webgpuUsable = status.includes('GPU preview ready');
+    if (!webgpuUsable) {
+      expect(status).toContain('WebGPU not available');
+      expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+      expect(await previewActive()).toBe(false);
+    }
+  }, 60_000);
+
+  it('GPU preview swaps a labelled preview mesh on a parameter edit', async () => {
+    if (!webgpuUsable) {
+      // Unsupported: toggling on must have changed no behaviour.
+      expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+      expect(await previewActive()).toBe(false);
+      return;
+    }
+    expect(await previewActive()).toBe(false);
+    // page.fill dispatches the input event the preview listens for.
+    await page.fill('#proc-sub_dem_relief-amplitude', '0.5');
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (await previewActive()) break;
+      await page.waitForTimeout(200);
+    }
+    expect(await previewActive()).toBe(true);
+    // The persistent amber banner labels the preview as non-authoritative.
+    expect(await isVisible(page, '#gpu-preview-banner')).toBe(true);
+    expect(await textOf(page, '#gpu-preview-banner')).toContain(
+      'not the authoritative terrain',
+    );
+    // The swapped mesh's heights differ from the sidecar's data...
+    const maxDelta = await page.evaluate(
+      () =>
+        (window as unknown as { __lts: { previewMaxAbsDelta: number | null } }).__lts
+          .previewMaxAbsDelta,
+    );
+    expect(maxDelta).toBeGreaterThan(0);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { __lts: { viewer: { previewShowing: boolean } } }).__lts.viewer
+            .previewShowing,
+      ),
+    ).toBe(true);
+    // ...while the authoritative status-bar seed/readouts still come from the
+    // sidecar dataset (the preview never enters currentLayers).
+    expect(await textOf(page, '#status-seed')).toBe('lunar-south-pole-site-01');
+    await page.screenshot({ path: join(SHOTS, '08-gpu-preview.png') });
+  }, 120_000);
+
+  it('Generate clears the GPU preview and shows real data', async () => {
+    if (!webgpuUsable) {
+      expect(await previewActive()).toBe(false);
+      return;
+    }
+    await page.click('#btn-generate');
+    // generate() clears the preview synchronously before the job starts.
+    await page.waitForFunction(
+      () => !document.getElementById('progress-overlay')!.hidden,
+      undefined,
+      { timeout: 15_000 },
+    );
+    expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+    await page.waitForFunction(
+      () => document.getElementById('progress-overlay')!.hidden,
+      undefined,
+      { timeout: 380_000 },
+    );
+    await waitForText(page, '#status-job', 'complete', 15_000);
+    // Real sidecar data is on screen; no preview, no banner, no flag.
+    expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+    expect(await previewActive()).toBe(false);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { __lts: { viewer: { previewShowing: boolean } } }).__lts.viewer
+            .previewShowing,
+      ),
+    ).toBe(false);
+  }, 400_000);
+
+  it('records the 08-gpu-preview screenshot only on the supported path', () => {
+    if (webgpuUsable) {
+      expect(existsSync(join(SHOTS, '08-gpu-preview.png'))).toBe(true);
+    } else {
+      // Unsupported path: the screenshot is legitimately absent — nothing to
+      // assert beyond the recorded flag itself.
+      expect(webgpuUsable).toBe(false);
+    }
+  });
+});
+
+/**
+ * The GPU preview rebuilds PerlinNoise2D's PRIVATE permutation table through
+ * the public API (`Rng` + the constructor's documented Fisher–Yates). This
+ * pins that replication: a mirror of `noise()` over `buildPermTable`'s output
+ * must agree with the real `PerlinNoise2D` EXACTLY (both sides are f64 CPU
+ * code running the identical operation sequence — this is NOT a claim about
+ * the WGSL shader, whose f32 output is approximate by construction).
+ * If the Fisher–Yates in terrain-core ever changes, this fails loudly instead
+ * of letting the preview silently sample a different noise field.
+ */
+describe('GPU preview permutation replication', () => {
+  it('buildPermTable reproduces PerlinNoise2D noise exactly (f64 CPU mirror)', () => {
+    const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
+    const lerp = (a: number, b: number, t: number) => a + t * (b - a);
+    const grad = (h: number, x: number, y: number): number => {
+      switch (h & 7) {
+        case 0: return x + y;
+        case 1: return -x + y;
+        case 2: return x - y;
+        case 3: return -x - y;
+        case 4: return x;
+        case 5: return -x;
+        case 6: return y;
+        default: return -y;
+      }
+    };
+    // The same seed channels the pipeline derives (generate.ts).
+    for (const channel of ['procedural:sub_dem_relief', 'procedural-warp:sub_dem_relief', 'procedural:fine_roughness']) {
+      const seed = deriveSeed('lunar-south-pole-site-01', channel);
+      const perm = buildPermTable(seed);
+      const reference = new PerlinNoise2D(seed);
+      const noise = (x: number, y: number): number => {
+        const xi = Math.floor(x);
+        const yi = Math.floor(y);
+        const xf = x - xi;
+        const yf = y - yi;
+        const X = xi & 255;
+        const Y = yi & 255;
+        const u = fade(xf);
+        const v = fade(yf);
+        const pX = perm[X];
+        const pX1 = perm[X + 1];
+        const aa = perm[pX + Y];
+        const ab = perm[pX + Y + 1];
+        const ba = perm[pX1 + Y];
+        const bb = perm[pX1 + Y + 1];
+        const x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
+        const x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
+        return lerp(x1, x2, v);
+      };
+      let nonZero = 0;
+      for (let i = 0; i < 200; i++) {
+        // Positive and negative coordinates, integer and fractional parts.
+        const x = ((i * 37) % 61) - 30 + i * 0.013;
+        const y = ((i * 17) % 53) - 26 + i * 0.007;
+        const got = noise(x, y);
+        expect(got).toBe(reference.noise(x, y));
+        if (got !== 0) nonZero++;
+      }
+      // Guard against a trivially-passing all-zero comparison.
+      expect(nonZero).toBeGreaterThan(100);
+    }
   });
 });

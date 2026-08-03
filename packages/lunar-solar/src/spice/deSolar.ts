@@ -40,8 +40,16 @@ import { NAIF_CODES, SpkFile } from './spk.js';
 import { BinaryPckFile } from './pck.js';
 import { j2000ToMoonMEMatrix } from './deFrame.js';
 
-/** Where the DE440 kernels live on this machine unless configured otherwise. */
-export const DEFAULT_KERNEL_DIRECTORY = '/mnt/projects/datasets/spice_kernels';
+/**
+ * Where the DE440 kernels live unless configured otherwise. The environment
+ * variable `LTS_SPICE_DIR` takes precedence (portability: reviewers place
+ * kernels wherever `scripts/fetch-data.sh` put them); the hard-coded path is
+ * this machine's dataset store. `solar.kernelDirectory` in a config still
+ * overrides both (ADR 0004: the schema injects no default, so configuration
+ * hashes of sites that never mention it are unchanged).
+ */
+export const DEFAULT_KERNEL_DIRECTORY =
+  process.env.LTS_SPICE_DIR ?? '/mnt/projects/datasets/spice_kernels';
 /** SPK planetary ephemeris (SSB/Sun/EMB/Moon/Earth, 1849–2150). */
 export const DE_SPK_FILENAME = 'de440s.bsp';
 /** Binary PCK with the integrated MOON_PA_DE440 orientation. */

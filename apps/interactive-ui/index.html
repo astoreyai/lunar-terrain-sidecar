@@ -205,6 +205,8 @@
             <label class="check"><input id="viz-tilebounds" type="checkbox" checked /> Layer boundaries</label>
             <label class="check"><input id="viz-contours" type="checkbox" /> Contour lines</label>
             <label class="check"><input id="viz-earthshine" type="checkbox" /> Earthshine (non-physical fill)</label>
+            <label class="check"><input id="viz-gpu-preview" type="checkbox" /> GPU preview (non-authoritative)</label>
+            <p class="note" id="gpu-preview-status">off — the CPU sidecar remains the sole authority</p>
           </section>
 
           <section class="panel" data-panel="solar">
@@ -255,6 +257,14 @@
             <strong id="legend-title">Lit regolith</strong>
             <span id="legend-note"></span>
           </div>
+          <!-- Persistent amber banner while the non-authoritative GPU preview
+               is swapped in (spec §20/§33: approximations must be labelled
+               wherever they appear). -->
+          <div
+            id="gpu-preview-banner"
+            hidden
+            style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#ffbf00;color:#1a1206;font-weight:600;font-size:12px;padding:6px 14px;border-radius:4px;z-index:20;pointer-events:none;white-space:nowrap;"
+          >GPU PREVIEW — approximate, not the authoritative terrain; Generate to commit</div>
           <div id="progress-overlay" hidden>
             <div class="bar"><div id="progress-fill"></div></div>
             <span id="progress-stage">—</span>

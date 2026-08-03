@@ -64,6 +64,12 @@ export class Viewer {
   private rockGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
   private polygonGroup = new THREE.Group();
+  /**
+   * Temporary, NON-AUTHORITATIVE preview meshes (GPU preview, spec §33).
+   * Never part of `terrainGroup`, so `pick()` and `surfaceHeightAt` keep
+   * answering from the sidecar's data even while a preview is showing.
+   */
+  private previewGroup = new THREE.Group();
 
   /**
    * Dispose every geometry and material under a group, then clear it.
@@ -137,6 +143,7 @@ export class Viewer {
     this.scene.add(this.rockGroup);
     this.scene.add(this.helperGroup);
     this.scene.add(this.polygonGroup);
+    this.scene.add(this.previewGroup);
 
     this.controls = new OrbitControls(this.perspective, canvas);
     this.controls.enableDamping = true;
@@ -195,6 +202,8 @@ export class Viewer {
   /** Replace the terrain with a new set of layers. */
   setLayers(layers: LayerGeometry[]): void {
     this.layers = layers;
+    // Fresh sidecar data supersedes any preview: revert before rebuilding.
+    this.restorePreview();
     Viewer.disposeGroup(this.terrainGroup);
     this.meshes.clear();
 
@@ -590,6 +599,44 @@ export class Viewer {
 
   clearPolygonPreview(): void {
     Viewer.disposeGroup(this.polygonGroup);
+  }
+
+  /**
+   * Swap in a TEMPORARY, NON-AUTHORITATIVE copy of one layer's decimated
+   * preview mesh with the given heights (GPU preview, spec §33).
+   *
+   * The sidecar's `LayerGeometry` in `this.layers` is untouched: the preview
+   * mesh is built from a shallow copy carrying the new heights, lives in its
+   * own group (so `pick()` still ray-casts the authoritative mesh), and the
+   * original mesh is merely hidden. `restorePreview()` or the next
+   * `setLayers()` reverts and disposes it.
+   */
+  setPreviewHeights(layerId: string, heights: Float32Array): void {
+    const layer = this.layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    if (heights.length !== layer.widthSamples * layer.heightSamples) {
+      throw new Error(
+        `preview heights length ${heights.length} does not match ` +
+          `${layer.widthSamples}×${layer.heightSamples} layer '${layerId}'`,
+      );
+    }
+    Viewer.disposeGroup(this.previewGroup);
+    const mesh = this.buildLayerMesh({ ...layer, heights });
+    mesh.name = `${layerId}::gpu-preview`;
+    this.previewGroup.add(mesh);
+    const original = this.meshes.get(layerId);
+    if (original) original.visible = false;
+  }
+
+  /** Revert to the sidecar's data: dispose the preview, unhide the original. */
+  restorePreview(): void {
+    Viewer.disposeGroup(this.previewGroup);
+    for (const mesh of this.meshes.values()) mesh.visible = true;
+  }
+
+  /** True while a preview mesh is swapped in. */
+  get previewShowing(): boolean {
+    return this.previewGroup.children.length > 0;
   }
 
   /** Ray-pick the terrain under a normalised device coordinate. */

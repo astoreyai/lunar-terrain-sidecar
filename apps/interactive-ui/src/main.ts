@@ -10,6 +10,7 @@ import { SidecarClient, decodeTile, RpcError } from './rpc.js';
 import { Viewer, type CameraMode } from './viewer.js';
 import { overlayLegend, type OverlayMode, slopeDegAt, roughnessAt, traversabilityScore } from './overlays.js';
 import { PRESETS, presetToConfig } from './presets.js';
+import { GpuPreview, type PreviewStackLayer } from './gpuPreview.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -51,7 +52,7 @@ function currentPreset() {
 function buildConfig(): Record<string, unknown> {
   const num = (id: string) => Number(($(id) as HTMLInputElement).value);
   const str = (id: string) => ($(id) as HTMLInputElement).value;
-  return presetToConfig(currentPreset(), {
+  const cfg = presetToConfig(currentPreset(), {
     terrainId: str('cfg-terrain-id'),
     seed: str('cfg-seed'),
     outputDirectory: str('cfg-output'),
@@ -71,6 +72,25 @@ function buildConfig(): Record<string, unknown> {
     rockMinDiameterM: num('cfg-rock-dmin'),
     rockPhysicalMinDiameterM: num('cfg-rock-physical'),
   });
+  // The procedural panel's editable fields override the preset's fractal
+  // parameters, so what the GPU previews is exactly what Generate commits.
+  const stack = cfg.proceduralStack as Array<{
+    id: string;
+    fractal: { octaves: number; frequency: number; amplitude: number };
+  }>;
+  for (const s of stack) {
+    const read = (field: string, fallback: number, min: number, integer = false): number => {
+      const el = document.getElementById(`proc-${s.id}-${field}`) as HTMLInputElement | null;
+      if (!el) return fallback;
+      const v = Number(el.value);
+      if (!Number.isFinite(v) || v < min) return fallback;
+      return integer ? Math.round(v) : v;
+    };
+    s.fractal.octaves = read('octaves', s.fractal.octaves, 1, true);
+    s.fractal.frequency = read('frequency', s.fractal.frequency, 1e-6);
+    s.fractal.amplitude = read('amplitude', s.fractal.amplitude, 0);
+  }
+  return cfg;
 }
 
 function renderLayerTable(): void {
@@ -121,9 +141,26 @@ function renderProceduralRows(): void {
     row.className = 'chips';
     row.innerHTML =
       `<span style="color:var(--text)">${s.id}</span>` +
-      `<span style="color:var(--muted)">${s.model} · ${s.fractal.octaves} oct · ` +
-      `λ≈${(1 / s.fractal.frequency).toFixed(2)} m · ±${s.fractal.amplitude} m</span>`;
+      `<span style="color:var(--muted)">${s.model}</span>`;
     host.appendChild(row);
+
+    // Editable fractal parameters. Generate commits them through the sidecar
+    // (buildConfig); with the GPU preview enabled, edits also drive an
+    // instant, non-authoritative preview.
+    const params = document.createElement('div');
+    params.className = 'chips';
+    const field = (name: string, label: string, value: number, step: string): string =>
+      `<label style="display:flex;gap:4px;align-items:center;color:var(--muted)">${label}` +
+      `<input id="proc-${s.id}-${name}" type="number" step="${step}" value="${value}" ` +
+      `style="width:62px" /></label>`;
+    params.innerHTML =
+      field('octaves', 'oct', s.fractal.octaves, '1') +
+      field('frequency', 'freq 1/m', s.fractal.frequency, '0.01') +
+      field('amplitude', 'amp m', s.fractal.amplitude, '0.01');
+    host.appendChild(params);
+    for (const input of Array.from(params.querySelectorAll('input'))) {
+      input.addEventListener('input', onProceduralParamEdit);
+    }
   }
 }
 
@@ -180,6 +217,9 @@ async function generate(): Promise<void> {
   if (generating) return;
   generating = true;
   ($('btn-generate') as HTMLButtonElement).disabled = true;
+  // Generate always clears the GPU preview: what follows is the real,
+  // authoritative sidecar data (spec §33).
+  clearGpuPreview();
   const config = buildConfig();
   $('progress-overlay').hidden = false;
   const started = performance.now();
@@ -205,6 +245,11 @@ async function generate(): Promise<void> {
     setStatus('perf-generate', `${Math.round(performance.now() - started)} ms`);
     setStatus('status-job', 'complete');
     await loadDataset();
+    // The just-committed parameters are the new preview baseline.
+    if (($('viz-gpu-preview') as HTMLInputElement).checked && gpuPreviewReady) {
+      previewBaseline = readPreviewStack();
+      setGpuStatus('GPU preview rebased on the committed parameters — approximate only');
+    }
   } catch (e) {
     log('export-result', describeError(e), 'fail');
   } finally {
@@ -239,6 +284,7 @@ async function fetchLayers(): Promise<
   setStatus('insp-terrain', ds.terrainId);
   setStatus('insp-seed', ds.seed);
   setStatus('status-seed', ds.seed);
+  datasetSeed = ds.seed;
   setStatus(
     'insp-site',
     `${ds.origin.site.latitudeDeg.toFixed(4)}°, ${ds.origin.site.longitudeDeg.toFixed(4)}°`,
@@ -311,6 +357,8 @@ async function loadDataset(): Promise<void> {
   const layers = await fetchLayers();
   if (myGeneration !== loadGeneration) return; // superseded — discard
   currentLayers = layers;
+  // Freshly streamed sidecar data supersedes any GPU preview.
+  clearGpuPreview();
   viewer.setLayers(
     currentLayers.map((l) => ({
       id: l.id,
@@ -699,6 +747,179 @@ async function redo(): Promise<void> {
   }
 }
 
+// ----------------------------------------- GPU preview (NON-AUTHORITATIVE)
+//
+// Spec §20/§33 and docs/reproducibility.md: the CPU sidecar is the sole
+// authority for terrain data. The WebGPU preview below exists only to show a
+// procedural parameter edit instantly. It is approximate (f32 vs the
+// sidecar's f64), is labelled as such everywhere it appears, and never
+// writes into currentLayers, the inspector readouts, exports, or edits —
+// Generate replaces it with real sidecar data.
+
+let gpuPreview: GpuPreview | null = null;
+let gpuPreviewReady = false;
+/** Seed of the dataset currently rendered — set by fetchLayers. */
+let datasetSeed = '';
+/** The stack parameters the rendered terrain was generated with. */
+let previewBaseline: PreviewStackLayer[] | null = null;
+let previewActive = false;
+let previewBusy = false;
+let previewQueued = false;
+
+const GPU_UNAVAILABLE = 'WebGPU not available in this browser';
+
+function setGpuStatus(text: string): void {
+  setStatus('gpu-preview-status', text);
+}
+
+/** Mirror preview state onto window.__lts for the Playwright checks. */
+function updatePreviewFlags(maxAbsDelta: number | null): void {
+  const lts = (window as unknown as Record<string, unknown>).__lts as
+    | Record<string, unknown>
+    | undefined;
+  if (lts) {
+    lts.previewActive = previewActive;
+    lts.previewMaxAbsDelta = maxAbsDelta;
+  }
+}
+
+/**
+ * The procedural stack as the sidecar would resolve it from the CURRENT
+ * panel inputs, including the pipeline's DEM suppression (generate.ts drops
+ * procedural wavelengths the source DEM already resolves).
+ */
+function readPreviewStack(): PreviewStackLayer[] {
+  const cfg = buildConfig();
+  const dem = cfg.dem as { enabled: boolean; effectiveResolutionMeters: number };
+  const stack = cfg.proceduralStack as Array<{
+    id: string;
+    model: 'fbm' | 'ridged' | 'warped_fbm';
+    enabled: boolean;
+    fractal: {
+      octaves: number;
+      lacunarity: number;
+      persistence: number;
+      frequency: number;
+      amplitude: number;
+      anisotropy?: number;
+    };
+    warpStrengthM?: number;
+    warpFrequency?: number;
+  }>;
+  return stack.map((s) => ({
+    id: s.id,
+    model: s.model,
+    enabled:
+      s.enabled && (!dem.enabled || 1 / s.fractal.frequency < dem.effectiveResolutionMeters),
+    fractal: {
+      octaves: s.fractal.octaves,
+      lacunarity: s.fractal.lacunarity,
+      persistence: s.fractal.persistence,
+      frequency: s.fractal.frequency,
+      amplitude: s.fractal.amplitude,
+      anisotropy: s.fractal.anisotropy ?? 1,
+    },
+    // Same defaults the pipeline applies (evaluateStack / compileStack).
+    warpStrengthM: s.warpStrengthM ?? 10,
+    warpFrequency: s.warpFrequency ?? s.fractal.frequency * 0.5,
+  }));
+}
+
+/** Drop the preview and show sidecar data again. Never touches the sidecar. */
+function clearGpuPreview(statusText?: string): void {
+  if (viewer) viewer.restorePreview();
+  const banner = document.getElementById('gpu-preview-banner');
+  if (banner) banner.hidden = true;
+  previewActive = false;
+  updatePreviewFlags(null);
+  if (statusText !== undefined) setGpuStatus(statusText);
+}
+
+async function setGpuPreviewEnabled(on: boolean): Promise<void> {
+  if (!on) {
+    clearGpuPreview('off — the CPU sidecar remains the sole authority');
+    return;
+  }
+  if (!GpuPreview.isSupported()) {
+    setGpuStatus(GPU_UNAVAILABLE);
+    return;
+  }
+  if (!gpuPreview) gpuPreview = new GpuPreview();
+  if (!gpuPreviewReady) {
+    setGpuStatus('initialising WebGPU…');
+    gpuPreviewReady = await gpuPreview.init();
+    if (!gpuPreviewReady) {
+      setGpuStatus(`${GPU_UNAVAILABLE} (${gpuPreview.failureReason})`);
+      return;
+    }
+  }
+  // The values on screen describe the terrain being shown; edits are
+  // previewed as deltas against them.
+  previewBaseline = readPreviewStack();
+  setGpuStatus('GPU preview ready — approximate only; edit procedural parameters');
+}
+
+async function runGpuPreview(): Promise<void> {
+  if (!gpuPreview || !gpuPreviewReady) return;
+  if (previewBusy) {
+    // Coalesce: one recompute in flight, at most one queued.
+    previewQueued = true;
+    return;
+  }
+  const layer =
+    currentLayers.find((l) => l.role === 'operational') ??
+    currentLayers.reduce<(typeof currentLayers)[number] | undefined>(
+      (best, l) => (!best || l.resolutionMeters < best.resolutionMeters ? l : best),
+      undefined,
+    );
+  if (!layer || !datasetSeed) {
+    setGpuStatus('GPU preview idle — no terrain loaded (Generate first)');
+    return;
+  }
+  if (!previewBaseline) previewBaseline = readPreviewStack();
+  previewBusy = true;
+  try {
+    const edited = readPreviewStack();
+    const t0 = performance.now();
+    const heights = await gpuPreview.compute(datasetSeed, previewBaseline, edited, {
+      widthSamples: layer.widthSamples,
+      heightSamples: layer.heightSamples,
+      minX: layer.bounds.minX,
+      minZ: layer.bounds.minZ,
+      resolutionMeters: layer.resolutionMeters,
+      baseHeights: layer.heights,
+    });
+    const ms = performance.now() - t0;
+    let maxAbs = 0;
+    for (let i = 0; i < heights.length; i++) {
+      const d = Math.abs(heights[i] - layer.heights[i]);
+      if (d > maxAbs) maxAbs = d;
+    }
+    viewer.setPreviewHeights(layer.id, heights);
+    $('gpu-preview-banner').hidden = false;
+    previewActive = true;
+    updatePreviewFlags(maxAbs);
+    setGpuStatus(
+      `GPU preview ${ms.toFixed(0)} ms · max |Δ| ${maxAbs.toFixed(3)} m — ` +
+        'approximate; Generate to commit',
+    );
+  } catch (e) {
+    clearGpuPreview(`GPU preview failed: ${(e as Error).message} — showing sidecar data`);
+  } finally {
+    previewBusy = false;
+    if (previewQueued) {
+      previewQueued = false;
+      void runGpuPreview();
+    }
+  }
+}
+
+/** Input handler for the procedural panel's parameter fields. */
+function onProceduralParamEdit(): void {
+  if (!(($('viz-gpu-preview') as HTMLInputElement).checked) || !gpuPreviewReady) return;
+  void runGpuPreview();
+}
+
 // --------------------------------------------------------------- viewport
 
 function applyVisualization(): void {
@@ -843,11 +1064,18 @@ function wireUi(): void {
     );
     renderLayerTable();
     renderProceduralRows();
+    // New preset, new stack values: the old preview baseline is meaningless.
+    previewBaseline = null;
+    clearGpuPreview();
   });
 
   for (const id of ['viz-overlay', 'viz-camera', 'viz-wireframe', 'viz-grid', 'viz-tilebounds', 'viz-contours', 'viz-earthshine']) {
     $(id).addEventListener('change', applyVisualization);
   }
+
+  ($('viz-gpu-preview') as HTMLInputElement).addEventListener('change', (e) => {
+    void setGpuPreviewEnabled((e.target as HTMLInputElement).checked);
+  });
 
   // Sculpting and construction chips share one active-brush selection.
   const brushRows = ['brush-buttons', 'construction-buttons'];
@@ -907,7 +1135,14 @@ function wireUi(): void {
   };
 }
 
-function boot(): void {
+async function boot(): Promise<void> {
+  // The optional WebGPU preview device must be created BEFORE the WebGL
+  // context: under SwiftShader the reverse order loses the WebGL context and
+  // fails the device request (empirically verified — see gpuPreview.ts).
+  // Instant no-op when WebGPU is absent; failures surface later as
+  // "not available" in the preview status line.
+  await GpuPreview.preInit();
+
   const canvas = $('canvas') as HTMLCanvasElement;
   viewer = new Viewer(canvas);
 
@@ -951,12 +1186,15 @@ function boot(): void {
     generate,
     loadDataset,
     applyVisualization,
+    // GPU preview state (non-authoritative; for the Playwright checks).
+    previewActive: false,
+    previewMaxAbsDelta: null,
   };
   document.body.setAttribute('data-ready', 'true');
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', () => void boot());
 } else {
-  boot();
+  void boot();
 }
