@@ -66,9 +66,23 @@ import {
   horizonProfile,
   parseInstant,
   solarPositionAtSite,
+  solarPositionAtSiteDE,
+  loadDeKernels,
   samplerFromArray,
+  SpiceKernelError,
+  DEFAULT_KERNEL_DIRECTORY,
+  DE_SPK_FILENAME,
+  DE_PCK_FILENAME,
 } from '@lts/lunar-solar';
 import { createHash } from 'node:crypto';
+import {
+  PARALLEL_THRESHOLD_SAMPLES,
+  ReliefWorkerPool,
+  defaultWorkerThreads,
+  runBaseReliefParallel,
+  runRegolithParallel,
+  type WireStackLayer,
+} from './workerPool.js';
 
 export const GENERATOR_NAME = 'lunar-terrain-sidecar';
 export const GENERATOR_VERSION = '0.1.0';
@@ -80,6 +94,14 @@ export interface GenerateOptions {
   onProgress?: ProgressFn;
   /** Abort cooperatively between stages. */
   signal?: { aborted: boolean };
+  /**
+   * Worker threads for the base_relief and regolith row-band hot loops
+   * (spec §14). `0` or `1` selects the fully synchronous code path — the
+   * reference implementation (spec §20). Defaults to min(cores − 2, 8).
+   * Output bits are identical either way; layers under
+   * `PARALLEL_THRESHOLD_SAMPLES` stay synchronous regardless.
+   */
+  workerThreads?: number;
 }
 
 export interface GenerateResult {
@@ -115,6 +137,26 @@ function checkAborted(opts: GenerateOptions): void {
 export async function generateTerrain(
   config: TerrainConfig,
   opts: GenerateOptions = {},
+): Promise<GenerateResult> {
+  // Resolve the worker policy once (spec §14). 0 or 1 → the synchronous
+  // reference path (spec §20); otherwise a pool is created lazily on the
+  // first layer large enough to dispatch and always torn down before this
+  // call returns, so no worker thread ever outlives a generation.
+  const workerThreads = Math.max(1, Math.floor(opts.workerThreads ?? defaultWorkerThreads()));
+  const holder: { pool: ReliefWorkerPool | null } = { pool: null };
+  const getPool =
+    workerThreads > 1 ? () => (holder.pool ??= new ReliefWorkerPool(workerThreads)) : null;
+  try {
+    return await generateTerrainImpl(config, opts, getPool);
+  } finally {
+    if (holder.pool) await holder.pool.destroy();
+  }
+}
+
+async function generateTerrainImpl(
+  config: TerrainConfig,
+  opts: GenerateOptions,
+  getPool: (() => ReliefWorkerPool) | null,
 ): Promise<GenerateResult> {
   const progress = opts.onProgress ?? (() => {});
   const notes: string[] = [];
@@ -263,6 +305,13 @@ export async function generateTerrain(
   const slopeDirZ = -Math.cos(slopeAz);
   const tanSlope = Math.tan(slopeRad);
 
+  // Stage progress in rows, accumulated monotonically across layers and
+  // emitted from the main thread as parallel bands complete (spec §14, §16).
+  const baseReliefTotalRows = layers.reduce((a, l) => a + l.heightSamples, 0);
+  let baseReliefDoneRows = 0;
+  const emitBaseReliefProgress = () =>
+    progress('base_relief', 0.2 + 0.15 * (baseReliefDoneRows / baseReliefTotalRows));
+
   for (const layer of layers) {
     const res = layer.horizontalResolutionMeters;
     // A layer grounded in a real DEM keeps its measured relief; procedural
@@ -298,22 +347,70 @@ export async function generateTerrain(
     const measured = layer.elevationProvenance === 'measured_dem';
     const measuredPlusSynthetic = ELEVATION_SOURCES.indexOf('measured_plus_synthetic');
 
-    for (let row = 0; row < layer.heightSamples; row++) {
-      const z = minZ + row * res;
-      const rowBase = row * widthSamples;
-      for (let col = 0; col < widthSamples; col++) {
-        const x = minX + col * res;
-        let h = 0;
-        if (tanSlope !== 0) h -= (x * slopeDirX + z * slopeDirZ) * tanSlope;
-        if (compiled.length > 0) h += evaluateCompiledStack(compiled, x, z);
-        if (h !== 0) {
-          const i = rowBase + col;
-          heightData[i] += h;
-          if (measured) {
-            elevationSource![i] = measuredPlusSynthetic;
+    const totalSamples = layer.widthSamples * layer.heightSamples;
+    if (getPool && totalSamples >= PARALLEL_THRESHOLD_SAMPLES) {
+      // Worker-thread band dispatch (spec §14). Every sample of this loop is
+      // a pure function of (x, z), the seeds and the pre-stage value at its
+      // own index, so row bands are independent; the workers execute the
+      // byte-for-byte same per-sample float sequence as the reference loop
+      // below (reliefWorker.ts) against the same seeds, and the result bits
+      // are identical. Race-freedom argument: workerPool.ts.
+      const wireStack: WireStackLayer[] = activeStack.map((s) => ({
+        id: s.id,
+        model: s.model,
+        enabled: s.enabled,
+        fractal: s.fractal,
+        warpStrengthM: s.warpStrengthM,
+        warpFrequency: s.warpFrequency,
+        // Seed channels come from the SAME SeedTree the reference path uses
+        // (already derived above), so the provenance manifest is unchanged.
+        noiseSeed: seeds.seed(`procedural:${s.id}`),
+        warpSeed: seeds.seed(`procedural-warp:${s.id}`),
+      }));
+      await runBaseReliefParallel(
+        getPool(),
+        {
+          minX,
+          minZ,
+          res,
+          widthSamples,
+          heightSamples: layer.heightSamples,
+          tanSlope,
+          slopeDirX,
+          slopeDirZ,
+          stack: wireStack,
+          measured,
+          measuredPlusSynthetic,
+        },
+        heightData,
+        measured ? elevationSource! : null,
+        (rows) => {
+          baseReliefDoneRows += rows;
+          emitBaseReliefProgress();
+        },
+      );
+    } else {
+      // Synchronous reference implementation (spec §20) — byte-for-byte the
+      // authority the worker path is measured against.
+      for (let row = 0; row < layer.heightSamples; row++) {
+        const z = minZ + row * res;
+        const rowBase = row * widthSamples;
+        for (let col = 0; col < widthSamples; col++) {
+          const x = minX + col * res;
+          let h = 0;
+          if (tanSlope !== 0) h -= (x * slopeDirX + z * slopeDirZ) * tanSlope;
+          if (compiled.length > 0) h += evaluateCompiledStack(compiled, x, z);
+          if (h !== 0) {
+            const i = rowBase + col;
+            heightData[i] += h;
+            if (measured) {
+              elevationSource![i] = measuredPlusSynthetic;
+            }
           }
         }
       }
+      baseReliefDoneRows += layer.heightSamples;
+      emitBaseReliefProgress();
     }
     if (layer.elevationProvenance === 'measured_dem' && activeStack.length > 0) {
       layer.elevationProvenance = 'measured_dem_plus_synthetic_subresolution';
@@ -414,9 +511,19 @@ export async function generateTerrain(
   if (config.regolith.enabled) {
     checkAborted(opts);
     progress('regolith_microrelief', 0.55);
-    for (const layer of layers) {
-      if (layer.horizontalResolutionMeters > config.regolith.maximumResolutionMeters) continue;
-      const noise = new PerlinNoise2D(seeds.seed(`regolith:${layer.id}`));
+    const regolithLayers = layers.filter(
+      (l) => l.horizontalResolutionMeters <= config.regolith.maximumResolutionMeters,
+    );
+    // Stage progress in rows, monotonic across layers (spec §14, §16).
+    const regolithTotalRows = regolithLayers.reduce((a, l) => a + l.heightSamples, 0);
+    let regolithDoneRows = 0;
+    const emitRegolithProgress = () =>
+      progress(
+        'regolith_microrelief',
+        0.55 + 0.1 * (regolithTotalRows > 0 ? regolithDoneRows / regolithTotalRows : 1),
+      );
+    for (const layer of regolithLayers) {
+      const regolithSeed = seeds.seed(`regolith:${layer.id}`);
       const p = {
         octaves: 4,
         lacunarity: 2.0,
@@ -425,21 +532,50 @@ export async function generateTerrain(
         amplitude: config.regolith.microreliefAmplitudeM,
         anisotropy: 1,
       };
-      // Same hoist as base relief: the octave ladder of `p` is invariant, so
-      // it is compiled once; `fbmCompiled` is bit-identical to `fbm`.
-      const compiled = compileFractal(p);
       const res = layer.horizontalResolutionMeters;
       const minX = layer.bounds.minX;
       const minZ = layer.bounds.minZ;
       const widthSamples = layer.widthSamples;
       const heightData = layer.heightData;
-      for (let row = 0; row < layer.heightSamples; row++) {
-        const z = minZ + row * res;
-        const rowBase = row * widthSamples;
-        for (let col = 0; col < widthSamples; col++) {
-          const x = minX + col * res;
-          heightData[rowBase + col] += fbmCompiled(noise, x, z, compiled);
+      const totalSamples = layer.widthSamples * layer.heightSamples;
+      if (getPool && totalSamples >= PARALLEL_THRESHOLD_SAMPLES) {
+        // Worker-thread band dispatch — same independence and bit-exactness
+        // argument as base relief (reliefWorker.ts, workerPool.ts). The seed
+        // is derived through the same SeedTree channel as the reference
+        // path, so the provenance manifest is unchanged.
+        await runRegolithParallel(
+          getPool(),
+          {
+            minX,
+            minZ,
+            res,
+            widthSamples,
+            heightSamples: layer.heightSamples,
+            fractal: p,
+            noiseSeed: regolithSeed,
+          },
+          heightData,
+          (rows) => {
+            regolithDoneRows += rows;
+            emitRegolithProgress();
+          },
+        );
+      } else {
+        // Synchronous reference implementation (spec §20).
+        const noise = new PerlinNoise2D(regolithSeed);
+        // Same hoist as base relief: the octave ladder of `p` is invariant,
+        // so it is compiled once; `fbmCompiled` is bit-identical to `fbm`.
+        const compiled = compileFractal(p);
+        for (let row = 0; row < layer.heightSamples; row++) {
+          const z = minZ + row * res;
+          const rowBase = row * widthSamples;
+          for (let col = 0; col < widthSamples; col++) {
+            const x = minX + col * res;
+            heightData[rowBase + col] += fbmCompiled(noise, x, z, compiled);
+          }
         }
+        regolithDoneRows += layer.heightSamples;
+        emitRegolithProgress();
       }
     }
     syntheticHeuristics.push(
@@ -550,6 +686,59 @@ export async function generateTerrain(
         'model. The limiting error is the IAU realisation of the Mean Earth frame, roughly ' +
         '0.01-0.03 deg, which propagates about 1:1 into solar elevation. At a lunar pole, ' +
         'where elevation spans only +/-1.54 deg, that is a few percent of the range.',
+    );
+  } else if (config.solar.mode === 'ephemeris_de') {
+    // Kernel-driven solar geometry. Missing kernels are a structured failure,
+    // NEVER a silent fallback to the analytic chain — a dataset claiming
+    // DE440 accuracy while carrying Meeus/IAU numbers would be a provenance
+    // lie of exactly the kind this project exists to prevent.
+    const kernelDirectory = config.solar.kernelDirectory ?? DEFAULT_KERNEL_DIRECTORY;
+    let kernels;
+    try {
+      kernels = loadDeKernels(kernelDirectory);
+    } catch (e) {
+      if (e instanceof SpiceKernelError) {
+        throw new TerrainError(
+          ERROR_CODES.SPICE_KERNELS_UNAVAILABLE,
+          `Solar mode 'ephemeris_de' requires the JPL DE440 kernels and they could not be ` +
+            `loaded: ${e.message} There is no fallback to the analytic chain; fix ` +
+            `solar.kernelDirectory or switch solar.mode to 'ephemeris'.`,
+          { kernelDirectory, cause: e.toJSON() },
+        );
+      }
+      throw e;
+    }
+    const epoch = parseInstant(config.solar.epochUtc!);
+    const sp = solarPositionAtSiteDE(epoch, config.site.latitudeDeg, config.site.longitudeDeg, kernels);
+    solar = {
+      epochUtc: epoch.toISOString(),
+      elevationDeg: sp.elevationDeg,
+      azimuthDeg: sp.azimuthDeg,
+      angularRadiusDeg: sp.angularRadiusDeg,
+      subSolarLatitudeDeg: sp.subSolar.latitudeDeg,
+      subSolarLongitudeDeg: sp.subSolar.longitudeDeg,
+      model: 'ephemeris_de',
+    };
+    // The kernels are cited as literature models rather than DataSource
+    // entries: DataSource requires a ground-sample resolutionMeters, which
+    // has no honest value for an ephemeris, and inventing one is exactly
+    // what the provenance system forbids.
+    literatureModels.push({
+      id: 'jpl_de440',
+      description:
+        'JPL DE440 planetary ephemeris and integrated lunar libration (SPK + binary PCK ' +
+        'Type 2 Chebyshev), with the fixed PA->ME421 rotation from moon_de440_250416.tf',
+      citation:
+        'Park, Folkner, Williams & Boggs (2021), The JPL Planetary and Lunar Ephemerides ' +
+        'DE440 and DE441, The Astronomical Journal 161:105.',
+    });
+    limitations.push(
+      `Solar angles come from the JPL DE440 kernels (${kernelDirectory}/${DE_SPK_FILENAME} + ` +
+        `${kernelDirectory}/${DE_PCK_FILENAME}: SPK positions, integrated lunar libration, ` +
+        'fixed PA->ME rotation). Residual orientation error is the ME421-vs-current-ME ' +
+        'realisation difference, <= 3.1e-7 rad (~53 cm on the surface) over 2000-2040 per ' +
+        'the frames kernel, plus the TT~TDB approximation (< 3e-7 deg). This mode replaces ' +
+        'the 0.01-0.03 deg IAU-frame floor of the analytic chain.',
     );
   } else {
     solar = {

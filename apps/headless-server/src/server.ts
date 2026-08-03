@@ -50,7 +50,10 @@ import {
   horizonProfile,
   samplerFromArray,
   solarPositionAtSite,
+  solarPositionAtSiteDE,
+  loadDeKernels,
   parseInstant,
+  SpiceKernelError,
 } from '@lts/lunar-solar';
 import { applyOperation, layerChecksum, makeDelta, maskChecksum } from './operations.js';
 
@@ -1280,7 +1283,37 @@ async function handle(
           siteLat = seleno.latitudeDeg;
           siteLon = seleno.longitudeDeg;
         }
-        const sp = solarPositionAtSite(epoch, siteLat, siteLon);
+        // Optional mode override: 'ephemeris' (analytic Meeus/IAU, the
+        // default — unchanged behaviour for existing clients) or
+        // 'ephemeris_de' (JPL DE440 kernels). A missing kernel set is a
+        // structured error, never a silent fall-back to the analytic chain.
+        const mode = p.mode === undefined ? 'ephemeris' : String(p.mode);
+        if (mode !== 'ephemeris' && mode !== 'ephemeris_de') {
+          throw new TerrainError(
+            ERROR_CODES.INVALID_CONFIG,
+            `parameter 'mode' must be 'ephemeris' or 'ephemeris_de', got ${JSON.stringify(p.mode)}`,
+          );
+        }
+        let sp;
+        if (mode === 'ephemeris_de') {
+          try {
+            const kernels = loadDeKernels(
+              p.kernelDirectory !== undefined ? String(p.kernelDirectory) : undefined,
+            );
+            sp = solarPositionAtSiteDE(epoch, siteLat, siteLon, kernels);
+          } catch (e) {
+            if (e instanceof SpiceKernelError) {
+              throw new TerrainError(
+                ERROR_CODES.SPICE_KERNELS_UNAVAILABLE,
+                `terrain.getSolar mode 'ephemeris_de' failed: ${e.message}`,
+                e.toJSON(),
+              );
+            }
+            throw e;
+          }
+        } else {
+          sp = solarPositionAtSite(epoch, siteLat, siteLon);
+        }
         return ok(req.id, {
           epochUtc: epoch.toISOString(),
           elevationDeg: sp.elevationDeg,
@@ -1292,7 +1325,7 @@ async function handle(
             longitudeDeg: sp.subSolar.longitudeDeg,
           },
           site: { latitudeDeg: siteLat, longitudeDeg: siteLon },
-          model: 'ephemeris',
+          model: mode,
           note:
             'Azimuth is clockwise from north; north is -Z. Elevation is above the geometric ' +
             'horizon of the reference sphere at the queried point and ignores local terrain — ' +

@@ -151,5 +151,5 @@ export interface SolarConditions {
   /** Sub-solar selenographic longitude, degrees. */
   subSolarLongitudeDeg: Degrees;
   /** How the angles were obtained. */
-  model: 'ephemeris' | 'manual_override';
+  model: 'ephemeris' | 'ephemeris_de' | 'manual_override';
 }

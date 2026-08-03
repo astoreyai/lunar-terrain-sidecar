@@ -2,9 +2,11 @@
 
 Scope: every limitation the system itself states — in module docstrings, capability declarations, provenance blocks, the README, and the ADRs — consolidated in one place. Each entry cites where the limitation is declared in source, so this file cannot silently diverge from the code that enforces or reports it. Dataset-specific limitations are additionally emitted into every export's `provenance.limitations` ([export-formats.md](export-formats.md)).
 
-## Solar accuracy floor: the IAU frame realisation, 0.01–0.03°
+## Solar accuracy floor: the IAU frame realisation — now measured at ≤ 0.012°, and bypassable
 
-The limiting error of the solar model is **not** the Meeus solar/lunar series (~0.01°) but the IAU/WGCCRE trigonometric realisation of the lunar Mean Earth / Polar Axis frame, which differs from a JPL DE-integrated libration by roughly **0.01–0.03°**. That propagates ~1:1 into solar elevation — a few percent of the entire ±1.54° polar elevation range; at 1° elevation a 0.03° error moves a shadow edge by ~3%. Declared in `packages/lunar-solar/src/lunarFrame.ts` (module docstring), [ADR 0001](decisions/0001-solar-model.md), and the limitation statement the pipeline writes into every ephemeris-mode export (`terrain-pipeline/src/generate.ts`). Upgrade path: a JPL DE kernel (DE440) plus a PA→ME rotation — rejected for now as a ~100 MB binary dependency (ADR 0001).
+The limiting error of the default (`ephemeris`) solar model is **not** the Meeus solar/lunar series (~0.01°) but the IAU/WGCCRE trigonometric realisation of the lunar Mean Earth / Polar Axis frame, which differs from a JPL DE-integrated libration by roughly **0.01–0.03°**. That propagates ~1:1 into solar elevation — a few percent of the entire ±1.54° polar elevation range; at 1° elevation a 0.03° error moves a shadow edge by ~3%. Declared in `packages/lunar-solar/src/lunarFrame.ts` (module docstring), [ADR 0001](decisions/0001-solar-model.md), and the limitation statement the pipeline writes into every ephemeris-mode export (`terrain-pipeline/src/generate.ts`).
+
+The upgrade path ADR 0001 named is now built ([ADR 0004](decisions/0004-de440-kernels.md)): solar mode **`ephemeris_de`** reads the real JPL DE440 kernels (`de440s.bsp` + `moon_pa_de440_200625.bpc` + the fixed PA→ME rotation from `moon_de440_250416.tf`) with a dependency-free reader in `packages/lunar-solar/src/spice/`, replacing the IAU floor with the ME421 realisation residual (≤ 3.1e-7 rad, ~53 cm on the surface). Holding the two modes against each other also **measured** the analytic chain's real error for the first time: sub-solar separation mean 0.0040°, max **0.0118°** over 360 monthly epochs 2020–2049 (`compareWithAnalytic` in `deSolar.ts`; `tests/lunar-solar.de.test.ts`) — inside the documented budget. The default stays `ephemeris`: flipping it would change the exported bytes of every existing site regenerated from its config (ADR 0004). `ephemeris_de` requires the kernels on disk and fails with a structured `TERRAIN_SPICE_KERNELS_UNAVAILABLE` error when they are absent — never a silent fallback.
 
 Related: `manual` solar mode is flagged `manual_override` in provenance and may be physically unreachable at the site; the pipeline warns when a polar config requests > 2° elevation (`generate.ts`).
 
@@ -23,6 +25,8 @@ Undo re-applies the exact inverse of the recorded operation (`INVERTIBLE_KINDS` 
 ## No GPU or WASM acceleration
 
 CPU generation is the reference implementation and the only implementation. Declared machine-readably in `terrain.capabilities` → `notImplemented.gpuGeneration` (`apps/headless-server/src/server.ts`) and in `apps/headless-server/src/cli.ts` (spec §20). The README's measured demonstration site (10.3 M samples) generates in ~7 s on CPU.
+
+CPU generation is no longer single-threaded, though: the `base_relief` and `regolith_microrelief` hot loops row-band across a `node:worker_threads` pool sized min(cores − 2, 8) by default (spec §14; `packages/terrain-pipeline/src/workerPool.ts`), with byte-identical output — proven by the `reproduce` gate and `tests/parallel.test.ts` against the synchronous path, which remains the reference implementation and is selected with `GenerateOptions.workerThreads: 1` (spec §20). Layers under ~256k samples stay synchronous. Crater stamping is deliberately **not** parallelised: overlapping craters accumulate `+=` in population order, so splitting them across threads would change bits.
 
 ## Heightfields only
 

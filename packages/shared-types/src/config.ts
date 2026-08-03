@@ -166,12 +166,30 @@ export const SolarConfigSchema = z
   .object({
     /**
      * `ephemeris` computes azimuth and elevation from the site's selenographic
-     * coordinates and a UTC epoch. `manual` takes the angles directly, and is
-     * flagged as such in provenance so nobody mistakes it for a real geometry.
+     * coordinates and a UTC epoch via the analytic Meeus/IAU chain.
+     * `ephemeris_de` does the same from the real JPL DE440 kernels (SPK
+     * positions + integrated lunar libration), removing the ~0.01–0.03°
+     * IAU-frame accuracy floor; it requires the kernels on disk and fails
+     * with a structured error when they are absent — never a silent
+     * fallback. `manual` takes the angles directly, and is flagged as such
+     * in provenance so nobody mistakes it for a real geometry.
+     *
+     * The default stays `ephemeris`: switching it would change the solar
+     * numbers (and thus the bytes) of every existing site regenerated from
+     * its config (see ADR 0004).
      */
-    mode: z.enum(['ephemeris', 'manual']).default('ephemeris'),
-    /** UTC instant, ISO-8601. Required for `ephemeris`. */
+    mode: z.enum(['ephemeris', 'ephemeris_de', 'manual']).default('ephemeris'),
+    /** UTC instant, ISO-8601. Required for `ephemeris` and `ephemeris_de`. */
     epochUtc: z.string().optional(),
+    /**
+     * Directory holding `de440s.bsp` and `moon_pa_de440_200625.bpc` for
+     * `ephemeris_de`. Deliberately optional with NO schema default (the
+     * effective default, `/mnt/projects/datasets/spice_kernels`, is applied
+     * at the point of use): a schema default would inject the key into every
+     * parsed config and change the canonical configuration hash of existing
+     * sites.
+     */
+    kernelDirectory: z.string().min(1).optional(),
     /** Manual solar elevation, degrees. Required for `manual`. */
     elevationDeg: z.number().min(-90).max(90).optional(),
     /** Manual solar azimuth, degrees clockwise from north. Required for `manual`. */
@@ -181,8 +199,8 @@ export const SolarConfigSchema = z
     /** Azimuth bins for the horizon profile. */
     horizonAzimuthBins: z.number().int().min(16).max(2880).default(360),
   })
-  .refine((s) => s.mode !== 'ephemeris' || !!s.epochUtc, {
-    message: 'solar.epochUtc is required when solar.mode is "ephemeris"',
+  .refine((s) => (s.mode !== 'ephemeris' && s.mode !== 'ephemeris_de') || !!s.epochUtc, {
+    message: 'solar.epochUtc is required when solar.mode is "ephemeris" or "ephemeris_de"',
   })
   .refine(
     (s) => s.mode !== 'manual' || (s.elevationDeg !== undefined && s.azimuthDeg !== undefined),
@@ -250,6 +268,7 @@ export const ERROR_CODES = {
   TILE_LIMIT: 'TERRAIN_TILE_LIMIT_EXCEEDED',
   LAYER_BOUNDS: 'TERRAIN_LAYER_BOUNDS_INCONSISTENT',
   DEM_UNAVAILABLE: 'TERRAIN_DEM_UNAVAILABLE',
+  SPICE_KERNELS_UNAVAILABLE: 'TERRAIN_SPICE_KERNELS_UNAVAILABLE',
   DEM_COVERAGE: 'TERRAIN_DEM_COVERAGE_INSUFFICIENT',
   OUTPUT_NOT_WRITABLE: 'TERRAIN_OUTPUT_NOT_WRITABLE',
   PROTOCOL_VERSION: 'TERRAIN_PROTOCOL_VERSION_MISMATCH',

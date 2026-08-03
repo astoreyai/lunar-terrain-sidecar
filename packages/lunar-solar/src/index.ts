@@ -19,3 +19,4 @@ export * from './lunarFrame.js';
 export * from './solarGeometry.js';
 export * from './constants.js';
 export * from './horizon.js';
+export * from './spice/index.js';

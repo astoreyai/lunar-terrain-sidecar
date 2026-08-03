@@ -120,7 +120,7 @@ All numbers below were produced by the commands in this README on this machine
 | samples | 10,259,003 |
 | craters / rocks | 8,023 / 6,409 |
 | artifacts | 183 files, 625.9 MB |
-| generate / export | 4.7 s / 1.8 s |
+| generate / export | 3.4 s / 1.8 s (8 worker threads, byte-identical to single-thread) |
 | validation | 26 checks, 0 errors |
 | reproducibility | **183/183 artifacts byte-identical** |
 
@@ -152,7 +152,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 200 tests, 10 files, all passing.
+**Test suite**: 215 tests, 12 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
@@ -193,10 +193,14 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 
 ## Known limitations
 
-- **Solar accuracy floor is the lunar frame, not the solar series.** The
-  IAU/WGCCRE rotation model realises the Mean Earth frame to ~0.01–0.03°, which
-  propagates roughly 1:1 into solar elevation — a few percent of the ±1.54°
-  polar range. Upgrade path is a JPL DE kernel with a PA→ME rotation.
+- **Solar accuracy is now measured, not estimated.** A dependency-free
+  TypeScript reader for the real JPL DE440 kernels (SPK + binary PCK lunar
+  orientation, on-disk at `/mnt/projects/datasets/spice_kernels`) provides an
+  `ephemeris_de` mode and measures the default Meeus/IAU chain against JPL's
+  integrated truth: **max 0.0118° sub-solar separation over 2020–2049** — the
+  literature's 0.01–0.03° budget holds at its favourable end. The default mode
+  stays analytic to preserve byte-reproducibility of existing sites; see
+  docs/decisions/0004-de440-kernels.md.
 - **PSR determination needs 18.6 years of sampling**, not one year, because the
   sub-solar latitude envelope migrates with the nodal cycle.
   `illuminationStatistics` reports the span it was given; it does not assert a

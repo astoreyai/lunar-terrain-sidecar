@@ -42,6 +42,13 @@ import {
   type ProceduralLayerSpec,
 } from '@lts/terrain-core';
 import { centeredBounds } from '@lts/shared-types';
+import {
+  ReliefWorkerPool,
+  defaultWorkerThreads,
+  runBaseReliefParallel,
+  runRegolithParallel,
+  type WireStackLayer,
+} from '@lts/terrain-pipeline';
 
 // ------------------------------------------------------------- demo inputs --
 
@@ -179,6 +186,16 @@ const RUNS = 3;
 let totalBaseMs = 0;
 let totalRegolithMs = 0;
 
+/** Single-thread results kept for the worker-pool determinism gate below. */
+const singleResults: Array<{
+  grid: Grid;
+  baseMed: number;
+  regolithMed: number;
+  baseSha: string;
+  bothSha: string;
+  base: Float32Array;
+}> = [];
+
 for (const g of GRIDS) {
   const grid = makeGrid(g);
   const n = grid.samples * grid.samples;
@@ -215,7 +232,153 @@ for (const g of GRIDS) {
   console.log(`  regolith    runs (ms): ${regolithRuns.map((x) => x.toFixed(1)).join(', ')}  median ${regolithMed.toFixed(1)}`);
   console.log(`  base_relief sha256:          ${sha256(base)}`);
   console.log(`  base+regolith sha256:        ${sha256(both)}`);
+
+  singleResults.push({
+    grid,
+    baseMed,
+    regolithMed,
+    baseSha: sha256(base),
+    bothSha: sha256(both),
+    base,
+  });
 }
 
 console.log(`total base_relief median:    ${totalBaseMs.toFixed(1)} ms`);
 console.log(`total regolith median:       ${totalRegolithMs.toFixed(1)} ms`);
+
+// -------------------------------------------- worker-pool comparison (§27) --
+//
+// The same two stages, banded across the production worker pool
+// (packages/terrain-pipeline/src/workerPool.ts) at its default size
+// min(cores − 2, 8). Timings include the pool path's SharedArrayBuffer
+// copy-in/copy-out, i.e. they are the real cost the pipeline pays.
+// Determinism gate: every pooled checksum MUST equal the single-thread
+// checksum printed above; a mismatch fails the benchmark.
+//
+// The wire stack mirrors generate.ts exactly: the same specs, and the seed
+// channels derived through the same SeedTree.
+const WIRE_STACK: WireStackLayer[] = STACK.map((s) => ({
+  id: s.id,
+  model: s.model,
+  enabled: s.enabled,
+  fractal: s.fractal,
+  warpStrengthM: s.warpStrengthM,
+  warpFrequency: s.warpFrequency,
+  noiseSeed: seeds.seed(`procedural:${s.id}`),
+  warpSeed: seeds.seed(`procedural-warp:${s.id}`),
+}));
+
+const poolSize = defaultWorkerThreads();
+const pool = new ReliefWorkerPool(poolSize);
+console.log(`\nworker pool (${poolSize} threads, demo regionalSlopeDeg 0):`);
+
+let mismatched = false;
+try {
+  // Untimed warm-up so worker startup and JIT are not measured.
+  {
+    const warm = makeGrid(GRIDS[0]);
+    const h = new Float32Array(warm.samples * warm.samples);
+    await runBaseReliefParallel(
+      pool,
+      {
+        minX: warm.minX,
+        minZ: warm.minZ,
+        res: warm.res,
+        widthSamples: warm.samples,
+        heightSamples: warm.samples,
+        tanSlope: 0,
+        slopeDirX: 0,
+        slopeDirZ: -1,
+        stack: WIRE_STACK,
+        measured: false,
+        measuredPlusSynthetic: 0,
+      },
+      h,
+      null,
+    );
+  }
+
+  let totalBasePoolMs = 0;
+  let totalRegolithPoolMs = 0;
+
+  for (const s of singleResults) {
+    const { grid } = s;
+    const n = grid.samples * grid.samples;
+
+    let base = new Float32Array(n);
+    const baseRuns: number[] = [];
+    for (let r = 0; r < RUNS; r++) {
+      base = new Float32Array(n);
+      const t0 = performance.now();
+      await runBaseReliefParallel(
+        pool,
+        {
+          minX: grid.minX,
+          minZ: grid.minZ,
+          res: grid.res,
+          widthSamples: grid.samples,
+          heightSamples: grid.samples,
+          tanSlope: 0,
+          slopeDirX: 0,
+          slopeDirZ: -1,
+          stack: WIRE_STACK,
+          measured: false,
+          measuredPlusSynthetic: 0,
+        },
+        base,
+        null,
+      );
+      baseRuns.push(performance.now() - t0);
+    }
+    const baseMed = median(baseRuns);
+    totalBasePoolMs += baseMed;
+
+    const regolithSeed = seeds.seed(`regolith:${grid.id}`);
+    let both = base;
+    const regolithRuns: number[] = [];
+    for (let r = 0; r < RUNS; r++) {
+      both = base.slice();
+      const t0 = performance.now();
+      await runRegolithParallel(
+        pool,
+        {
+          minX: grid.minX,
+          minZ: grid.minZ,
+          res: grid.res,
+          widthSamples: grid.samples,
+          heightSamples: grid.samples,
+          fractal: REGOLITH_P,
+          noiseSeed: regolithSeed,
+        },
+        both,
+      );
+      regolithRuns.push(performance.now() - t0);
+    }
+    const regolithMed = median(regolithRuns);
+    totalRegolithPoolMs += regolithMed;
+
+    const baseOk = sha256(base) === s.baseSha;
+    const bothOk = sha256(both) === s.bothSha;
+    if (!baseOk || !bothOk) mismatched = true;
+
+    console.log(`${grid.id} (${grid.samples}x${grid.samples} @ ${grid.res} m):`);
+    console.log(
+      `  base_relief pooled (ms): ${baseRuns.map((x) => x.toFixed(1)).join(', ')}  median ${baseMed.toFixed(1)}  ` +
+        `speedup ${(s.baseMed / baseMed).toFixed(2)}x  sha ${baseOk ? 'IDENTICAL' : 'MISMATCH'}`,
+    );
+    console.log(
+      `  regolith    pooled (ms): ${regolithRuns.map((x) => x.toFixed(1)).join(', ')}  median ${regolithMed.toFixed(1)}  ` +
+        `speedup ${(s.regolithMed / regolithMed).toFixed(2)}x  sha ${bothOk ? 'IDENTICAL' : 'MISMATCH'}`,
+    );
+  }
+
+  console.log(`total base_relief pooled:    ${totalBasePoolMs.toFixed(1)} ms  (${(totalBaseMs / totalBasePoolMs).toFixed(2)}x)`);
+  console.log(`total regolith pooled:       ${totalRegolithPoolMs.toFixed(1)} ms  (${(totalRegolithMs / totalRegolithPoolMs).toFixed(2)}x)`);
+} finally {
+  await pool.destroy();
+}
+
+if (mismatched) {
+  console.error('DETERMINISM GATE FAILED: pooled checksums differ from single-thread checksums.');
+  process.exit(1);
+}
