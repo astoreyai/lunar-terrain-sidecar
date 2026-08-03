@@ -82,6 +82,10 @@ export const METHODS = [
   'terrain.applyOperation',
   'terrain.getOperationLog',
   'terrain.replayLog',
+  'terrain.getDelta',
+  'terrain.getChangedSince',
+  'terrain.snapshot',
+  'terrain.restoreSnapshot',
   'terrain.getTile',
   'terrain.getHeight',
   'terrain.getNormal',
@@ -168,6 +172,39 @@ export interface TerrainOperation {
   timestamp: string;
 }
 
+/**
+ * Sparse changed-sample payload for live sync (spec §19). Instead of
+ * re-streaming full tiles after every brush stroke, a client applies exactly
+ * the samples an edit changed to its own copy of the layer.
+ *
+ * `indices` are sample indices into the edited layer's row-major grid
+ * (`row * widthSamples + col`), encoded base64 uint32 little-endian;
+ * `heights` are the post-edit elevations at those samples, base64 float32
+ * little-endian. Both arrays have exactly `sampleCount` entries.
+ */
+export interface TerrainDeltaSparse {
+  layerId: string;
+  sampleCount: number;
+  /** base64 uint32le sample indices, row-major into the edited layer. */
+  indices: string;
+  /** base64 float32le new elevation values, one per index. */
+  heights: string;
+}
+
+/**
+ * Above this many changed samples a sparse payload is larger than simply
+ * refetching the changed tiles, so the delta omits `sparse` and says why in
+ * `sparseOmitted` (spec §19).
+ */
+export const SPARSE_SAMPLE_CAP = 65536;
+
+/**
+ * How many recent deltas the session retains for terrain.getDelta /
+ * terrain.getChangedSince. Older sequence numbers error as pruned — the
+ * client's remedy is a full resync, and the error says so.
+ */
+export const DELTA_WINDOW = 256;
+
 export interface TerrainDelta {
   deltaId: string;
   sequenceNumber: number;
@@ -175,6 +212,12 @@ export interface TerrainDelta {
   affectedBounds: { minX: number; minZ: number; maxX: number; maxZ: number };
   changedTiles: string[];
   operations: TerrainOperation[];
+  /** Number of height samples this delta changed (0 for a mask-only paint). */
+  changedSampleCount: number;
+  /** Sparse changed-sample payload; absent above {@link SPARSE_SAMPLE_CAP}. */
+  sparse?: TerrainDeltaSparse;
+  /** Why `sparse` is absent, when it is — never silently omitted. */
+  sparseOmitted?: string;
   previousChecksum: string;
   resultingChecksum: string;
   /**

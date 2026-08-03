@@ -152,7 +152,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 193 tests, 9 files, all passing.
+**Test suite**: 200 tests, 10 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants

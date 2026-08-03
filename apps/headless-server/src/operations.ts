@@ -22,7 +22,12 @@ import {
   type TerrainLayer,
 } from '@lts/shared-types';
 import { PerlinNoise2D, fbm, type FractalParameters } from '@lts/terrain-core';
-import type { TerrainDelta, TerrainOperation } from '@lts/terrain-protocol';
+import {
+  SPARSE_SAMPLE_CAP,
+  type TerrainDelta,
+  type TerrainDeltaSparse,
+  type TerrainOperation,
+} from '@lts/terrain-protocol';
 
 export interface ElevationStats {
   min: number;
@@ -34,6 +39,13 @@ export interface ApplyResult {
   removedVolumeM3: number;
   depositedVolumeM3: number;
   samplesTouched: number;
+  /**
+   * Row-major sample indices whose height the operation committed, sorted
+   * ascending — the committed deltas map's keys, exposed so `makeDelta` can
+   * build the sparse changed-sample payload (spec §19) without re-scanning
+   * the heightfield. Empty for a mask-only `semantic_paint`.
+   */
+  changedSamples: Uint32Array;
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number };
   /** Elevation statistics over the touched samples, before the edit. */
   elevationBefore: ElevationStats;
@@ -820,10 +832,15 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
   // invalidation must cover it. Use the footprint bounds instead.
   const paintBounds = op.kind === 'semantic_paint' ? featureBounds : undefined;
 
+  // The committed deltas map's keys, sorted ascending so the sparse payload
+  // is deterministic regardless of scan/ring insertion order.
+  const changedSamples = Uint32Array.from(deltas.keys()).sort();
+
   return {
     removedVolumeM3: removed,
     depositedVolumeM3: deposited,
     samplesTouched: touched,
+    changedSamples,
     bounds: paintBounds ?? {
       minX: touched ? minX : ringCx,
       maxX: touched ? maxX : ringCx,
@@ -900,6 +917,41 @@ export function tilesInBounds(
   return out;
 }
 
+/**
+ * Sparse changed-sample payload (spec §19): the committed sample indices and
+ * their POST-edit heights, read back from the layer so the payload is exactly
+ * what a client must write to reproduce the edit. Above `SPARSE_SAMPLE_CAP`
+ * changed samples the payload would out-weigh simply refetching the changed
+ * tiles, so it is omitted — with the reason stated, never silently.
+ */
+function makeSparse(
+  layer: TerrainLayer,
+  changedSamples: Uint32Array,
+): { sparse?: TerrainDeltaSparse; sparseOmitted?: string } {
+  const count = changedSamples.length;
+  if (count > SPARSE_SAMPLE_CAP) {
+    return {
+      sparseOmitted: `sample count ${count} exceeds ${SPARSE_SAMPLE_CAP}; fetch changed tiles instead`,
+    };
+  }
+  const heights = new Float32Array(count);
+  for (let i = 0; i < count; i++) heights[i] = layer.heightData[changedSamples[i]];
+  return {
+    sparse: {
+      layerId: layer.id,
+      sampleCount: count,
+      indices: Buffer.from(
+        changedSamples.buffer,
+        changedSamples.byteOffset,
+        changedSamples.byteLength,
+      ).toString('base64'),
+      heights: Buffer.from(heights.buffer, heights.byteOffset, heights.byteLength).toString(
+        'base64',
+      ),
+    },
+  };
+}
+
 /** Build a delta record from an applied operation. */
 export function makeDelta(
   layer: TerrainLayer,
@@ -919,6 +971,8 @@ export function makeDelta(
     affectedBounds: result.bounds,
     changedTiles: tilesInBounds(layer, tileSizeSamples, result.bounds),
     operations: [op],
+    changedSampleCount: result.changedSamples.length,
+    ...makeSparse(layer, result.changedSamples),
     previousChecksum,
     resultingChecksum: layerChecksum(layer),
     previousMaskChecksum,

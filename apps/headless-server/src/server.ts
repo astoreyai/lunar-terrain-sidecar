@@ -11,8 +11,9 @@
  */
 
 import { WebSocketServer, type WebSocket } from 'ws';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   ERROR_CODES,
   TerrainError,
@@ -34,9 +35,11 @@ import { generateTerrain, GENERATOR_VERSION } from '@lts/terrain-pipeline';
 import { exportTerrain } from '@lts/terrain-export';
 import { validateDataset } from '@lts/terrain-validation';
 import {
+  DELTA_WINDOW,
   METHODS,
   PROTOCOL_VERSION,
   RPC_CODES,
+  SPARSE_SAMPLE_CAP,
   type JobRecord,
   type JsonRpcRequest,
   type TerrainDelta,
@@ -54,13 +57,27 @@ import { applyOperation, layerChecksum, makeDelta, maskChecksum } from './operat
 interface Session {
   dataset?: TerrainDataset;
   tileSizeSamples: number;
+  /**
+   * The most recent deltas, newest last, capped at DELTA_WINDOW (256): a live
+   * sync client polls terrain.getChangedSince and fetches individual deltas by
+   * sequence number, so recent history must survive — but unbounded retention
+   * would grow without limit under continuous editing. Pruned sequence numbers
+   * error as pruned (full resync required), never as unknown.
+   */
   deltas: TerrainDelta[];
   operationLog: TerrainOperation[];
+  /**
+   * Sequence number the NEXT delta will receive. Tracked separately from
+   * `deltas.length` because the window above prunes the array's head.
+   */
+  nextSequence: number;
+  /** Output directory of the installed dataset's generate; snapshots go under it. */
+  outputDirectory?: string;
 }
 
 const jobs = new Map<string, JobRecord>();
 const cancelFlags = new Map<string, { aborted: boolean }>();
-const session: Session = { tileSizeSamples: 256, deltas: [], operationLog: [] };
+const session: Session = { tileSizeSamples: 256, deltas: [], operationLog: [], nextSequence: 0 };
 let jobCounter = 0;
 /**
  * Job id of the generate currently running, or null.
@@ -268,6 +285,66 @@ function deltaSummary(d: TerrainDelta) {
 }
 
 /**
+ * Retained-delta window bounds: `head` is the sequence number the next delta
+ * will receive, `oldest` the lowest sequence number still retained. With no
+ * deltas retained (fresh baseline, or everything pruned) `oldest === head`.
+ */
+function sequenceWindow(): { head: number; oldest: number } {
+  const head = session.nextSequence;
+  const oldest = session.deltas.length > 0 ? session.deltas[0].sequenceNumber : head;
+  return { head, oldest };
+}
+
+/** A required non-negative-integer `sequenceNumber` parameter. */
+function sequenceParam(p: Record<string, unknown>): number {
+  const seq = num(p, 'sequenceNumber');
+  if (!Number.isInteger(seq) || seq < 0) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      "parameter 'sequenceNumber' must be a non-negative integer",
+      { sequenceNumber: seq },
+    );
+  }
+  return seq;
+}
+
+/**
+ * The two ways a sequence number can miss the retained window, kept DISTINCT
+ * because the client's remedy differs: an unknown sequence number is a caller
+ * bug (it never existed here); a pruned one existed but has aged out of the
+ * DELTA_WINDOW, and the only correct recovery is a full resync — refetch the
+ * affected tiles or restore a snapshot, not retry.
+ */
+function unknownSequenceError(seq: number, head: number): TerrainError {
+  return new TerrainError(
+    ERROR_CODES.JOB_NOT_FOUND,
+    `no delta with sequence number ${seq} exists; the current head sequence is ${head}`,
+    { reason: 'unknown', requestedSequence: seq, headSequence: head },
+  );
+}
+
+function prunedSequenceError(seq: number, oldest: number, head: number): TerrainError {
+  return new TerrainError(
+    ERROR_CODES.JOB_NOT_FOUND,
+    `delta ${seq} has been pruned (only the last ${DELTA_WINDOW} deltas are retained; ` +
+      `oldest retained is ${oldest}) — do a full resync: refetch tiles with terrain.getTile ` +
+      'or restore a snapshot',
+    {
+      reason: 'pruned',
+      requestedSequence: seq,
+      oldestRetained: oldest,
+      headSequence: head,
+      deltaWindow: DELTA_WINDOW,
+    },
+  );
+}
+
+/** SHA-256 hex digest of raw file bytes, for snapshot manifest validation. */
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
  * The single internal path every edit takes, whether it arrives via
  * terrain.applyOperation or terrain.replayLog (spec §12, §19): validate,
  * apply, refresh bounds, re-seat rocks, record the delta and the operation
@@ -373,12 +450,17 @@ function performOperation(opInput: Partial<TerrainOperation> | undefined) {
     layer,
     op,
     result,
-    session.deltas.length,
+    session.nextSequence,
     before,
     beforeMask,
     session.tileSizeSamples,
   );
+  session.nextSequence++;
   session.deltas.push(delta);
+  // Retain only the last DELTA_WINDOW deltas for getDelta/getChangedSince.
+  // The operation log below is NOT pruned: deterministic replay (spec §12)
+  // needs the full ordered history, and it is far smaller than the deltas.
+  while (session.deltas.length > DELTA_WINDOW) session.deltas.shift();
   session.operationLog.push(op);
 
   // Construction kinds (spec §11) — everything except the plain
@@ -509,6 +591,9 @@ async function handle(
           noiseModels: ['fbm', 'ridged', 'warped_fbm'],
           demFormats: ['pds3_img', 'geotiff'],
           solarModes: ['ephemeris', 'manual'],
+          // Live-sync limits (spec §19), declared so a client can size its
+          // polling strategy without discovering them from errors.
+          sync: { sparseSampleCap: SPARSE_SAMPLE_CAP, deltaWindow: DELTA_WINDOW },
           coordinateSystem: {
             handedness: 'right',
             up_axis: '+Y',
@@ -585,8 +670,10 @@ async function handle(
             session.tileSizeSamples = config.tileSizeSamples;
             session.deltas = [];
             session.operationLog = [];
+            session.nextSequence = 0;
 
             const outDir = resolve(config.outputDirectory);
+            session.outputDirectory = outDir;
             exportTerrain(dataset, {
               outputDirectory: outDir,
               tileSizeSamples: config.tileSizeSamples,
@@ -796,6 +883,267 @@ async function handle(
           finalChecksum: applied.length > 0 ? last.resultingChecksum : layerChecksum(finest),
           finalMaskChecksum:
             applied.length > 0 ? last.resultingMaskChecksum : maskChecksum(finest),
+        });
+      }
+
+      case 'terrain.getDelta': {
+        // One stored delta, sparse payload included (spec §19): a sync client
+        // that learns from getChangedSince that it missed sequence N fetches
+        // exactly that delta and applies its changed samples in place.
+        requireDataset();
+        const seq = sequenceParam(p);
+        const { head, oldest } = sequenceWindow();
+        if (seq >= head) throw unknownSequenceError(seq, head);
+        if (seq < oldest) throw prunedSequenceError(seq, oldest, head);
+        // Retained deltas are contiguous in sequence, so index arithmetic
+        // is exact — but assert rather than assume.
+        const delta = session.deltas[seq - oldest];
+        if (!delta || delta.sequenceNumber !== seq) {
+          throw unknownSequenceError(seq, head);
+        }
+        return ok(req.id, delta);
+      }
+
+      case 'terrain.getChangedSince': {
+        // The cheap poll (spec §19): "what changed since sequence N?" returns
+        // the deduplicated union of changed tiles across every intervening
+        // delta plus per-layer changed-sample counts, so a client can decide
+        // whether to apply sparse deltas or refetch tiles — without the
+        // server re-streaming anything.
+        requireDataset();
+        const seq = sequenceParam(p);
+        const { head, oldest } = sequenceWindow();
+        if (seq > head) throw unknownSequenceError(seq, head);
+        if (seq < oldest) throw prunedSequenceError(seq, oldest, head);
+        const tiles = new Set<string>();
+        const perLayer = new Map<string, number>();
+        for (const d of session.deltas) {
+          if (d.sequenceNumber < seq) continue;
+          for (const t of d.changedTiles) tiles.add(t);
+          const layerId = d.operations[0].layerId;
+          perLayer.set(layerId, (perLayer.get(layerId) ?? 0) + d.changedSampleCount);
+        }
+        return ok(req.id, {
+          fromSequence: seq,
+          toSequence: head,
+          changedTiles: [...tiles],
+          perLayer: [...perLayer].map(([layerId, changedSampleCount]) => ({
+            layerId,
+            changedSampleCount,
+          })),
+        });
+      }
+
+      case 'terrain.snapshot': {
+        // Periodic full snapshot (spec §19): every layer's raw heightfield and
+        // semantic mask plus a checksummed manifest, written under the
+        // dataset's own output directory. Refused while a generate runs for
+        // the same reason edits are: the dataset it would capture is about to
+        // be replaced.
+        requireNoRunningJob('snapshot the terrain');
+        const dataset = requireDataset();
+        if (!session.outputDirectory) {
+          throw new TerrainError(
+            ERROR_CODES.OUTPUT_NOT_WRITABLE,
+            'no output directory is associated with the loaded dataset',
+          );
+        }
+        const seq = session.nextSequence;
+        const dir = resolve(session.outputDirectory, 'snapshots', `snap-${seq}`);
+        mkdirSync(dir, { recursive: true });
+        const layers = dataset.layers.map((layer) => {
+          const heightFile = `${layer.id}.height.f32`;
+          writeFileSync(
+            resolve(dir, heightFile),
+            Buffer.from(
+              layer.heightData.buffer,
+              layer.heightData.byteOffset,
+              layer.heightData.byteLength,
+            ),
+          );
+          const mask = layer.masks.semantic;
+          let maskFile: string | null = null;
+          if (mask) {
+            maskFile = `${layer.id}.mask.u8`;
+            writeFileSync(
+              resolve(dir, maskFile),
+              Buffer.from(mask.buffer, mask.byteOffset, mask.byteLength),
+            );
+          }
+          return {
+            layerId: layer.id,
+            widthSamples: layer.widthSamples,
+            heightSamples: layer.heightSamples,
+            heightFile,
+            heightSha256: layerChecksum(layer),
+            maskFile,
+            maskSha256: maskChecksum(layer),
+          };
+        });
+        const manifest = {
+          sequenceNumber: seq,
+          timestamp: new Date().toISOString(),
+          terrainId: dataset.id,
+          seed: dataset.seed,
+          directory: dir,
+          layers,
+        };
+        writeFileSync(resolve(dir, 'snapshot.json'), JSON.stringify(manifest, null, 2));
+        return ok(req.id, manifest);
+      }
+
+      case 'terrain.restoreSnapshot': {
+        // Restore a snapshot into the CURRENT dataset (spec §19). Everything
+        // is read and validated BEFORE anything is mutated: a checksum
+        // mismatch, missing file, layer-set mismatch or size mismatch must
+        // leave the live terrain untouched — corrupt snapshots must not load,
+        // and must not half-load either.
+        requireNoRunningJob('restore a snapshot');
+        const dataset = requireDataset();
+        const dir = resolve(String(p.directory ?? ''));
+        const manifestPath = resolve(dir, 'snapshot.json');
+        if (!existsSync(manifestPath)) {
+          throw new TerrainError(
+            ERROR_CODES.JOB_NOT_FOUND,
+            `no snapshot manifest at ${manifestPath}`,
+            { directory: dir, manifestPath },
+          );
+        }
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+          sequenceNumber?: number;
+          layers?: Array<{
+            layerId: string;
+            heightFile: string;
+            heightSha256: string;
+            maskFile: string | null;
+            maskSha256: string;
+          }>;
+        };
+        if (!Array.isArray(manifest.layers)) {
+          throw new TerrainError(
+            ERROR_CODES.VALIDATION_FAILED,
+            `snapshot manifest at ${manifestPath} is malformed: no layers array`,
+            { manifestPath },
+          );
+        }
+
+        // Layer ids must match the current dataset exactly — restoring a
+        // snapshot of a different site into this one would be silent
+        // cross-dataset corruption.
+        const current = new Map(dataset.layers.map((l) => [l.id, l]));
+        const snapshotIds = manifest.layers.map((e) => e.layerId);
+        const missingInDataset = snapshotIds.filter((id) => !current.has(id));
+        const missingInSnapshot = [...current.keys()].filter((id) => !snapshotIds.includes(id));
+        if (missingInDataset.length > 0 || missingInSnapshot.length > 0) {
+          throw new TerrainError(
+            ERROR_CODES.INVALID_CONFIG,
+            'snapshot layers do not match the current dataset: ' +
+              `[${missingInDataset.join(', ')}] exist only in the snapshot, ` +
+              `[${missingInSnapshot.join(', ')}] only in the dataset`,
+            { missingInDataset, missingInSnapshot },
+          );
+        }
+
+        const mismatches: Array<Record<string, unknown>> = [];
+        const staged: Array<{
+          layer: TerrainLayer;
+          heightBytes: Buffer;
+          maskBytes: Buffer | null;
+        }> = [];
+        for (const entry of manifest.layers) {
+          const layer = current.get(entry.layerId)!;
+          const heightPath = resolve(dir, entry.heightFile);
+          if (!existsSync(heightPath)) {
+            mismatches.push({ file: entry.heightFile, problem: 'missing' });
+            continue;
+          }
+          const heightBytes = readFileSync(heightPath);
+          const heightActual = sha256(heightBytes);
+          if (heightActual !== entry.heightSha256) {
+            mismatches.push({
+              file: entry.heightFile,
+              problem: 'checksum mismatch',
+              expectedSha256: entry.heightSha256,
+              actualSha256: heightActual,
+            });
+          }
+          if (heightBytes.byteLength !== layer.heightData.byteLength) {
+            mismatches.push({
+              file: entry.heightFile,
+              problem: 'size mismatch',
+              expectedBytes: layer.heightData.byteLength,
+              actualBytes: heightBytes.byteLength,
+            });
+          }
+          let maskBytes: Buffer | null = null;
+          if (entry.maskFile) {
+            const maskPath = resolve(dir, entry.maskFile);
+            if (!existsSync(maskPath)) {
+              mismatches.push({ file: entry.maskFile, problem: 'missing' });
+              continue;
+            }
+            maskBytes = readFileSync(maskPath);
+            const maskActual = sha256(maskBytes);
+            if (maskActual !== entry.maskSha256) {
+              mismatches.push({
+                file: entry.maskFile,
+                problem: 'checksum mismatch',
+                expectedSha256: entry.maskSha256,
+                actualSha256: maskActual,
+              });
+            }
+            if (maskBytes.byteLength !== layer.widthSamples * layer.heightSamples) {
+              mismatches.push({
+                file: entry.maskFile,
+                problem: 'size mismatch',
+                expectedBytes: layer.widthSamples * layer.heightSamples,
+                actualBytes: maskBytes.byteLength,
+              });
+            }
+          }
+          staged.push({ layer, heightBytes, maskBytes });
+        }
+        if (mismatches.length > 0) {
+          throw new TerrainError(
+            ERROR_CODES.VALIDATION_FAILED,
+            `snapshot at ${dir} failed validation against its manifest — ` +
+              'a corrupt snapshot must not load; the live dataset is unchanged',
+            { directory: dir, mismatches },
+          );
+        }
+
+        // Commit: byte-copy into the existing typed arrays (avoids any
+        // alignment assumption about Node's pooled read buffers), refresh
+        // bounds, and reset the edit history — this is a new baseline.
+        for (const s of staged) {
+          new Uint8Array(
+            s.layer.heightData.buffer,
+            s.layer.heightData.byteOffset,
+            s.layer.heightData.byteLength,
+          ).set(s.heightBytes);
+          if (s.maskBytes) {
+            if (s.layer.masks.semantic) {
+              s.layer.masks.semantic.set(s.maskBytes);
+            } else {
+              s.layer.masks.semantic = Uint8Array.from(s.maskBytes);
+            }
+          }
+          recomputeVerticalBounds(s.layer);
+        }
+        dataset.bounds.minY = Math.min(...dataset.layers.map((l) => l.bounds.minY));
+        dataset.bounds.maxY = Math.max(...dataset.layers.map((l) => l.bounds.maxY));
+        session.deltas = [];
+        session.operationLog = [];
+        session.nextSequence = 0;
+        return ok(req.id, {
+          directory: dir,
+          snapshotSequenceNumber: manifest.sequenceNumber ?? null,
+          restoredLayers: staged.length,
+          layers: dataset.layers.map((l) => ({
+            layerId: l.id,
+            heightSha256: layerChecksum(l),
+            maskSha256: maskChecksum(l),
+          })),
         });
       }
 
