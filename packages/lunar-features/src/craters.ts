@@ -36,8 +36,16 @@ export interface CraterSamplingOptions {
   model: 'production_csfd' | 'power_law';
   /** Surface age, Ga. Read by `production_csfd`. */
   surfaceAgeGa: number;
-  /** Cumulative density at the minimum diameter, per km². Read by `power_law`. */
+  /** Cumulative density at the anchor diameter, per km². Read by `power_law`. */
   densityPerKm2?: number;
+  /**
+   * Diameter the power-law density is anchored at, metres. Defaults to
+   * `minDiameterM`. The pipeline raises `minDiameterM` to four grid samples,
+   * so without an explicit anchor the same configuration would realise
+   * different densities on different-resolution layers — the configured
+   * density must always mean "cumulative density at the *configured* minimum".
+   */
+  powerLawAnchorDiameterM?: number;
   /** Differential slope. Read by `power_law`. */
   powerLawExponent: number;
   /**
@@ -101,8 +109,9 @@ export function sampleCraterPopulation(
       return cappedCumulativeDensityPerM2(D, opts.surfaceAgeGa);
     }
     const n0 = (opts.densityPerKm2 ?? 150) / 1e6;
+    const anchor = opts.powerLawAnchorDiameterM ?? opts.minDiameterM;
     // Cumulative slope is (exponent - 1) for a differential slope `exponent`.
-    return n0 * Math.pow(D / opts.minDiameterM, -(opts.powerLawExponent - 1));
+    return n0 * Math.pow(D / anchor, -(opts.powerLawExponent - 1));
   };
 
   const BINS = 48;

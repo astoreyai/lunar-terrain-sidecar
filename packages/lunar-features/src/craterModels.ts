@@ -188,13 +188,18 @@ export function freshDepthDiameterRatio(diameterM: number): number {
 /**
  * Rim height of a fresh simple crater, metres.
  *
- * Pike (1977): rim height is about 4% of the rim-crest diameter for fresh
- * simple lunar craters.
+ * Pike (1977): h_r = 0.036 D^1.014 with both in kilometres. The exponent is
+ * close to 1, so this is *nearly* proportional — the earlier shorthand of a
+ * flat 4% overshot the source by ~14% across the 1–400 m synthesis range
+ * (3.51 m vs 4.0 m at D = 100 m), and at grazing polar sun a rim's shadow
+ * length scales directly with its height.
  */
-export const PIKE_RIM_HEIGHT_RATIO = 0.04;
+export const PIKE_RIM_COEFFICIENT = 0.036;
+export const PIKE_RIM_EXPONENT = 1.014;
 
 export function freshRimHeight(diameterM: number): number {
-  return PIKE_RIM_HEIGHT_RATIO * diameterM;
+  const dKm = diameterM / 1000;
+  return PIKE_RIM_COEFFICIENT * Math.pow(dKm, PIKE_RIM_EXPONENT) * 1000;
 }
 
 /**

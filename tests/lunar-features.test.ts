@@ -146,8 +146,14 @@ describe('crater morphometry', () => {
     }
   });
 
-  it('uses Pike rim height of 4% of diameter', () => {
-    expect(freshRimHeight(100)).toBeCloseTo(4, 12);
+  it("follows Pike's rim-height power law h_r = 0.036 D^1.014 (km)", () => {
+    // At D = 100 m: 0.036 * 0.1^1.014 km = 3.51 m — not the 4.0 m a flat 4%
+    // shorthand gives.
+    expect(freshRimHeight(100)).toBeCloseTo(0.036 * Math.pow(0.1, 1.014) * 1000, 9);
+    expect(freshRimHeight(100)).toBeGreaterThan(3.4);
+    expect(freshRimHeight(100)).toBeLessThan(3.6);
+    // Exactly on the source at 1 km.
+    expect(freshRimHeight(1000)).toBeCloseTo(36, 6);
   });
 });
 
@@ -464,6 +470,59 @@ describe('procedural noise', () => {
     expect(Math.abs(f / N)).toBeLessThan(0.1);
     // Ridged noise creases upward, so its distribution is skewed.
     expect(Math.abs(r / N)).toBeGreaterThan(0.05);
+  });
+});
+
+describe('crater stamp brush geometry', () => {
+  it('writes the rim in every direction, not only the bbox diagonals', async () => {
+    // Regression: the operation bounding box reached only `radius`, but the
+    // rim Gaussian extends to 1.3*radius — so the rim existed on the square
+    // bbox diagonals and vanished along the axes, a four-lobed crater.
+    const { applyOperation } = await import('../apps/headless-server/src/operations.js');
+    const res = 0.5;
+    const n = 101; // 50 m span, centre at (0,0)
+    const layer = {
+      id: 'flat',
+      role: 'operational' as const,
+      bounds: { minX: -25, minZ: -25, maxX: 25, maxZ: 25, minY: 0, maxY: 0 },
+      horizontalResolutionMeters: res,
+      verticalQuantizationMeters: 0,
+      widthSamples: n,
+      heightSamples: n,
+      heightData: new Float32Array(n * n),
+      masks: {},
+      elevationProvenance: 'synthetic' as const,
+    };
+    applyOperation(layer, {
+      operationId: 'op-0',
+      kind: 'crater_stamp',
+      layerId: 'flat',
+      centerXMeters: 0,
+      centerZMeters: 0,
+      radiusMeters: 10,
+      strengthMeters: 1,
+      falloff: 2,
+      timestamp: '1970-01-01T00:00:00Z',
+    });
+
+    const heightAt = (x: number, z: number) => {
+      const col = Math.round((x - layer.bounds.minX) / res);
+      const row = Math.round((z - layer.bounds.minZ) / res);
+      return layer.heightData[row * n + col];
+    };
+
+    // Rim peak sits at u=1 (d=10). Sample it due east and on the diagonal:
+    // both must be raised, and by similar amounts.
+    const eastRim = heightAt(10, 0);
+    const diagRim = heightAt(10 / Math.SQRT2, 10 / Math.SQRT2);
+    expect(eastRim).toBeGreaterThan(0.1);
+    expect(diagRim).toBeGreaterThan(0.1);
+    expect(Math.abs(eastRim - diagRim)).toBeLessThan(0.03);
+
+    // And the outer rim slope at u=1.2 must exist on the axis too. Its true
+    // value is 0.15·e^-((0.2/0.12)²) ≈ 0.0093 m — before the fix it was
+    // exactly 0 there, so any clearly-positive bound discriminates.
+    expect(heightAt(12, 0)).toBeGreaterThan(0.005);
   });
 });
 

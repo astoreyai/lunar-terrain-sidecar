@@ -42,8 +42,11 @@ export const SOUTH_POLAR_LOLA: PolarStereographicParams = {
  *
  * South aspect: `x = ρ sin Δλ`, `y = ρ cos Δλ`, with
  * `ρ = 2 R k₀ tan(π/4 + φ/2)`. At φ = −90° this gives ρ = 0 (the pole sits at
- * the origin); at φ = −75° it gives 457 425 m, which matches the 7624 × 120 m
- * extent of the LDEM_75S product to under half a pixel.
+ * the origin); at φ = −75° it gives 457 466 m — 26 m inside the LDEM_75S
+ * product's 457 440 m half-extent, i.e. the 75°S boundary lands within a
+ * quarter-pixel of the outermost pixel centre. (An earlier revision of this
+ * comment quoted 457 425 m, which matched neither the formula nor the
+ * product.)
  */
 export function forward(
   latitudeDeg: number,
@@ -96,10 +99,11 @@ export function normalizeLongitude(deg: number): number {
 /**
  * Local scale distortion of the projection at a latitude.
  *
- * Polar stereographic is conformal but not equal-area: one projected metre is
- * `k` true metres, with `k = 2 k₀ / (1 + sin|φ|)` for the polar aspect. At the
- * pole k = k₀ = 1; at 75° it is 1.017, so ignoring it would stretch a 2 km
- * context tile by 34 m at the edge of the LDEM_75S product.
+ * Polar stereographic is conformal but not equal-area: one TRUE metre on the
+ * ground maps to `k` projected metres, with `k = 2 k₀ / (1 + sin|φ|)` ≥ 1 for
+ * the polar aspect (so one projected metre is 1/k true metres). At the pole
+ * k = k₀ = 1; at 75° it is 1.017, so ignoring it would misplace the edge of a
+ * 2 km context tile by 34 m at the boundary of the LDEM_75S product.
  *
  * Local terrain frames are built at the site and are small enough that this is
  * applied as a single scalar at the site latitude rather than per-pixel; the

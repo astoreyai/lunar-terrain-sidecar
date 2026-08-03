@@ -251,7 +251,11 @@ export function resampleDemToLocal(
     data: out,
     datumElevationM: datum,
     noDataFraction: noData / out.length,
-    sourcePixelsPerSample: req.resolutionMeters / raster.resolutionMeters,
+    // Both sides in TRUE ground metres: the raster's MAP_SCALE is projected
+    // metres, and one true metre maps to `projectionScale` projected metres,
+    // so a source pixel covers MAP_SCALE / k true metres on the ground.
+    sourcePixelsPerSample:
+      req.resolutionMeters / (raster.resolutionMeters / frame.projectionScale),
   };
 }
 

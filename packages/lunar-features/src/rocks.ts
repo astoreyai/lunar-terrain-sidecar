@@ -160,6 +160,62 @@ export function sampleRockPopulation(
   let index = 0;
   let rejectedSlope = 0;
 
+  /**
+   * Diameter within a bin, drawn from the ACTIVE model's own distribution.
+   *
+   * The exponential model previously drew within-bin diameters from the
+   * power-law exponent — a parameter that is supposed to be inert in Golombek
+   * mode. Within a narrow log bin the difference is small, but the sampled
+   * distribution must not depend on an unrelated knob. For the exponential
+   * model the dominant within-bin weight e^(−qD) is inverted exactly.
+   */
+  const q = golombekQ(Math.max(1e-6, opts.areaCoverage));
+  const drawDiameter = (dLo: number, dHi: number): number => {
+    if (opts.model === 'power_law') return rng.powerLaw(dLo, dHi, opts.powerLawExponent);
+    const eLo = Math.exp(-q * dLo);
+    const eHi = Math.exp(-q * dHi);
+    const u = rng.next();
+    return -Math.log(eLo - u * (eLo - eHi)) / q;
+  };
+
+  const makeRock = (x: number, z: number, dLo: number, dHi: number): void => {
+    if (slopeDegAtWorld(layer, x, z) > opts.maxSlopeDeg) {
+      rejectedSlope++;
+      return;
+    }
+    const diameter = drawDiameter(dLo, dHi);
+    const buried = Math.max(0, Math.min(0.95, opts.meanBuriedFraction + rng.normal() * 0.15));
+    // Irregular clasts: axis ratios widen with angularity.
+    const spread = 0.15 + 0.35 * opts.angularity;
+    const a = diameter / 2;
+    const semiAxes: [number, number, number] = [
+      a * (1 + rng.normal() * spread * 0.5),
+      a * Math.max(0.35, 1 - Math.abs(rng.normal()) * spread),
+      a * (1 + rng.normal() * spread * 0.5),
+    ];
+    rocks.push({
+      id: `rock-${String(index++).padStart(6, '0')}`,
+      x,
+      z,
+      diameterM: diameter,
+      physical: diameter >= opts.physicalMinDiameterM,
+      buriedFraction: buried,
+      angularity: opts.angularity,
+      semiAxes,
+      rotation: randomQuaternion(rng),
+    });
+  };
+
+  // Rim annuli (0.9R..1.4R), clipped against nothing — annulus area is only
+  // used for the EXCESS expectation below.
+  const RIM_INNER = 0.9;
+  const RIM_OUTER = 1.4;
+  const rims = opts.craterRims;
+  const rimAnnulusArea = rims.reduce(
+    (sum, r) => sum + Math.PI * r.radiusM * r.radiusM * (RIM_OUTER ** 2 - RIM_INNER ** 2),
+    0,
+  );
+
   for (let b = 0; b < BINS; b++) {
     const dLo = Math.exp(logMin + ((logMax - logMin) * b) / BINS);
     const dHi = Math.exp(logMin + ((logMax - logMin) * (b + 1)) / BINS);
@@ -171,57 +227,46 @@ export function sampleRockPopulation(
           (Math.pow(dLo / opts.minDiameterM, -(opts.powerLawExponent - 1)) -
             Math.pow(dHi / opts.minDiameterM, -(opts.powerLawExponent - 1)));
 
+    // Background population at the FULL calibrated density, everywhere.
+    //
+    // The previous construction thinned off-rim rocks to 1/enhancement, which
+    // silently divided the calibrated global coverage by the enhancement
+    // factor (default 4): configuring Golombek k = 0.06 realised ~0.015.
+    // Rim blockiness is physically EXCESS ejecta on rims, not a suppression
+    // of the background — so the background stays calibrated and the rims
+    // receive additional rocks on top.
     const count = rng.poisson(Math.max(0, perM2 * areaM2));
-
     for (let i = 0; i < count; i++) {
-      const x = rng.uniform(opts.minX, opts.maxX);
-      const z = rng.uniform(opts.minZ, opts.maxZ);
+      makeRock(rng.uniform(opts.minX, opts.maxX), rng.uniform(opts.minZ, opts.maxZ), dLo, dHi);
+    }
 
-      // Crater-rim enhancement: rocks off a rim survive with probability
-      // 1/enhancement, so rim annuli end up `enhancement` times denser.
-      if (opts.craterRimEnhancement > 1 && opts.craterRims.length > 0) {
-        let onRim = false;
-        for (const rim of opts.craterRims) {
-          const d = Math.hypot(x - rim.x, z - rim.z);
-          if (d > rim.radiusM * 0.9 && d < rim.radiusM * 1.4) {
-            onRim = true;
+    // Rim excess: (enhancement − 1) × the background density over the annuli.
+    if (opts.craterRimEnhancement > 1 && rims.length > 0 && rimAnnulusArea > 0) {
+      const excess = rng.poisson(
+        Math.max(0, perM2 * rimAnnulusArea * (opts.craterRimEnhancement - 1)),
+      );
+      for (let i = 0; i < excess; i++) {
+        // Pick an annulus weighted by its area, then a uniform point in it.
+        let pick = rng.next() * rimAnnulusArea;
+        let rim = rims[rims.length - 1];
+        for (const r of rims) {
+          const a = Math.PI * r.radiusM * r.radiusM * (RIM_OUTER ** 2 - RIM_INNER ** 2);
+          if (pick < a) {
+            rim = r;
             break;
           }
+          pick -= a;
         }
-        if (!onRim && rng.next() > 1 / opts.craterRimEnhancement) continue;
+        // Uniform over an annulus: r = sqrt(u·(ro²−ri²)+ri²).
+        const ri = rim.radiusM * RIM_INNER;
+        const ro = rim.radiusM * RIM_OUTER;
+        const rr = Math.sqrt(rng.next() * (ro * ro - ri * ri) + ri * ri);
+        const theta = rng.uniform(0, 2 * Math.PI);
+        const x = rim.x + rr * Math.cos(theta);
+        const z = rim.z + rr * Math.sin(theta);
+        if (x < opts.minX || x > opts.maxX || z < opts.minZ || z > opts.maxZ) continue;
+        makeRock(x, z, dLo, dHi);
       }
-
-      if (slopeDegAtWorld(layer, x, z) > opts.maxSlopeDeg) {
-        rejectedSlope++;
-        continue;
-      }
-
-      const diameter = rng.powerLaw(dLo, dHi, opts.powerLawExponent);
-      const buried = Math.max(
-        0,
-        Math.min(0.95, opts.meanBuriedFraction + rng.normal() * 0.15),
-      );
-
-      // Irregular clasts: axis ratios widen with angularity.
-      const spread = 0.15 + 0.35 * opts.angularity;
-      const a = diameter / 2;
-      const semiAxes: [number, number, number] = [
-        a * (1 + rng.normal() * spread * 0.5),
-        a * Math.max(0.35, 1 - Math.abs(rng.normal()) * spread),
-        a * (1 + rng.normal() * spread * 0.5),
-      ];
-
-      rocks.push({
-        id: `rock-${String(index++).padStart(6, '0')}`,
-        x,
-        z,
-        diameterM: diameter,
-        physical: diameter >= opts.physicalMinDiameterM,
-        buriedFraction: buried,
-        angularity: opts.angularity,
-        semiAxes,
-        rotation: randomQuaternion(rng),
-      });
     }
   }
 

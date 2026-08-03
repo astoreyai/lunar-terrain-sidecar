@@ -194,11 +194,19 @@ export function estimate(config: TerrainConfig): TerrainEstimate {
   const totalMeshBytes = layers.reduce((a, l) => a + l.meshBytes, 0);
   const totalTiles = layers.reduce((a, l) => a + l.tiles, 0);
 
-  const demEffective = config.dem?.enabled ? config.dem.effectiveResolutionMeters : undefined;
   let estimatedCraters = 0;
   let estimatedRockInstances = 0;
   for (const l of config.layers) {
-    estimatedCraters += estimateCraterCount(config, l, demEffective);
+    // The de-confliction cap applies only to layers the DEM actually grounds
+    // (dem.applyToRoles); the pipeline caps per-layer via
+    // sourceEffectiveResolutionMeters, so the estimate must match.
+    const grounded =
+      config.dem?.enabled === true && config.dem.applyToRoles.includes(l.role);
+    estimatedCraters += estimateCraterCount(
+      config,
+      l,
+      grounded ? config.dem!.effectiveResolutionMeters : undefined,
+    );
   }
   // Rocks go on the finest layer only; placing them per layer would duplicate
   // the same boulder at three resolutions.

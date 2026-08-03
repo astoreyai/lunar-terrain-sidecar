@@ -64,6 +64,25 @@ export class Viewer {
   private rockGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
 
+  /**
+   * Dispose every geometry and material under a group, then clear it.
+   *
+   * `Group.clear()` alone only detaches children — the WebGL buffers stay
+   * allocated. `loadDataset` rebuilds the terrain after every brush stroke,
+   * so without disposal a 20-stroke editing session leaked on the order of a
+   * gigabyte of GPU memory before the context was lost.
+   */
+  private static disposeGroup(group: THREE.Group): void {
+    group.traverse((obj) => {
+      const mesh = obj as Partial<THREE.Mesh> & { geometry?: THREE.BufferGeometry };
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mat = (obj as Partial<THREE.Mesh>).material;
+      if (Array.isArray(mat)) for (const m of mat) m.dispose();
+      else if (mat) (mat as THREE.Material).dispose();
+    });
+    group.clear();
+  }
+
   private layers: LayerGeometry[] = [];
   private meshes = new Map<string, THREE.Mesh>();
 
@@ -174,7 +193,7 @@ export class Viewer {
   /** Replace the terrain with a new set of layers. */
   setLayers(layers: LayerGeometry[]): void {
     this.layers = layers;
-    this.terrainGroup.clear();
+    Viewer.disposeGroup(this.terrainGroup);
     this.meshes.clear();
 
     let extent = 1;
@@ -352,7 +371,7 @@ export class Viewer {
       physical: boolean;
     }>,
   ): void {
-    this.rockGroup.clear();
+    Viewer.disposeGroup(this.rockGroup);
     if (rocks.length === 0) return;
 
     const geometry = new THREE.IcosahedronGeometry(1, 1);
@@ -393,7 +412,7 @@ export class Viewer {
 
   /** Grid, layer boundaries and contour lines (spec §13). */
   setHelpers(options: { grid: boolean; tileBounds: boolean; contours: boolean }): void {
-    this.helperGroup.clear();
+    Viewer.disposeGroup(this.helperGroup);
 
     if (options.grid) {
       const size = Math.ceil(this.siteExtentM);

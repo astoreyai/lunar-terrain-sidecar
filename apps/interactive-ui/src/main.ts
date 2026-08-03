@@ -162,7 +162,15 @@ function describeError(e: unknown): string {
   return (e as Error).message ?? String(e);
 }
 
+let generating = false;
+
 async function generate(): Promise<void> {
+  // The server refuses concurrent generates with a structured error, but a
+  // double-click should not even send the second request: the first finally{}
+  // would hide the progress overlay while the second job still runs.
+  if (generating) return;
+  generating = true;
+  ($('btn-generate') as HTMLButtonElement).disabled = true;
   const config = buildConfig();
   $('progress-overlay').hidden = false;
   const started = performance.now();
@@ -192,6 +200,8 @@ async function generate(): Promise<void> {
     log('export-result', describeError(e), 'fail');
   } finally {
     $('progress-overlay').hidden = true;
+    generating = false;
+    ($('btn-generate') as HTMLButtonElement).disabled = false;
   }
 }
 
@@ -276,8 +286,22 @@ async function fetchLayers(): Promise<
   return out;
 }
 
+/**
+ * Monotonic token for loadDataset calls.
+ *
+ * Tile streaming awaits one RPC per layer, and callers are fire-and-forget
+ * (brush strokes, generate completion), so two loads can interleave. Without
+ * sequencing, whichever finished LAST installed its layers — not the one
+ * started last — and a load could stitch together tiles from before and after
+ * a concurrent edit. Stale loads now discard their results.
+ */
+let loadGeneration = 0;
+
 async function loadDataset(): Promise<void> {
-  currentLayers = await fetchLayers();
+  const myGeneration = ++loadGeneration;
+  const layers = await fetchLayers();
+  if (myGeneration !== loadGeneration) return; // superseded — discard
+  currentLayers = layers;
   viewer.setLayers(
     currentLayers.map((l) => ({
       id: l.id,
@@ -334,7 +358,16 @@ async function exportTerrain(): Promise<void> {
       artifacts: number;
       totalBytes: number;
       validation: { passed: boolean; errors: number };
-    }>('terrain.export', { outputDirectory: ($('cfg-output') as HTMLInputElement).value });
+    }>('terrain.export', {
+      outputDirectory: ($('cfg-output') as HTMLInputElement).value,
+      // The format checkboxes were previously wired to nothing: unchecking
+      // EXR still exported EXR. They now travel with the request.
+      formats: {
+        exr: ($('fmt-exr') as HTMLInputElement).checked,
+        png16: ($('fmt-png') as HTMLInputElement).checked,
+        glb: ($('fmt-glb') as HTMLInputElement).checked,
+      },
+    });
     log(
       'export-result',
       `${r.artifacts} artifacts, ${(r.totalBytes / 1e6).toFixed(1)} MB\n${r.outputDirectory}\n` +
@@ -351,7 +384,16 @@ async function validate(): Promise<void> {
     const r = await client.call<{
       outputDirectory: string;
       validation: { passed: boolean; errors: number };
-    }>('terrain.export', { outputDirectory: ($('cfg-output') as HTMLInputElement).value });
+    }>('terrain.export', {
+      outputDirectory: ($('cfg-output') as HTMLInputElement).value,
+      // The format checkboxes were previously wired to nothing: unchecking
+      // EXR still exported EXR. They now travel with the request.
+      formats: {
+        exr: ($('fmt-exr') as HTMLInputElement).checked,
+        png16: ($('fmt-png') as HTMLInputElement).checked,
+        glb: ($('fmt-glb') as HTMLInputElement).checked,
+      },
+    });
     log(
       'validation-result',
       r.validation.passed
@@ -365,6 +407,34 @@ async function validate(): Promise<void> {
 }
 
 // ----------------------------------------------------------------- editing
+
+async function applyStoredOperation(
+  operation: Record<string, unknown>,
+  pushUndo: boolean,
+): Promise<boolean> {
+  if (!client.connected) return false;
+  try {
+    const r = await client.call<{
+      delta: {
+        deltaId: string;
+        changedTiles: string[];
+        massBalance: { removedVolumeM3: number; depositedVolumeM3: number; relativeError: number };
+      };
+    }>('terrain.applyOperation', { operation });
+
+    if (pushUndo) undoStack.push(operation);
+    const mb = r.delta.massBalance;
+    $('edit-status').textContent =
+      `${r.delta.deltaId}: ${r.delta.changedTiles.length} tiles · ` +
+      `cut ${mb.removedVolumeM3.toFixed(3)} m³ · fill ${mb.depositedVolumeM3.toFixed(3)} m³ · ` +
+      `error ${(mb.relativeError * 100).toFixed(2)}%`;
+    await loadDataset();
+    return true;
+  } catch (e) {
+    $('edit-status').textContent = describeError(e);
+    return false;
+  }
+}
 
 async function applyBrushAt(x: number, z: number): Promise<void> {
   if (!activeBrush || !client.connected) return;
@@ -381,57 +451,65 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
     lengthMeters: num('brush-radius') * 4,
     targetElevationMeters: viewer.surfaceHeightAt(x, z),
   };
-
-  try {
-    const r = await client.call<{
-      delta: {
-        deltaId: string;
-        changedTiles: string[];
-        massBalance: { removedVolumeM3: number; depositedVolumeM3: number; relativeError: number };
-      };
-    }>('terrain.applyOperation', { operation });
-
-    undoStack.push(operation);
-    redoStack.length = 0;
-    const mb = r.delta.massBalance;
-    $('edit-status').textContent =
-      `${r.delta.deltaId}: ${r.delta.changedTiles.length} tiles · ` +
-      `cut ${mb.removedVolumeM3.toFixed(3)} m³ · fill ${mb.depositedVolumeM3.toFixed(3)} m³ · ` +
-      `error ${(mb.relativeError * 100).toFixed(2)}%`;
-    await loadDataset();
-  } catch (e) {
-    $('edit-status').textContent = describeError(e);
-  }
+  // A NEW stroke invalidates the redo history; undo/redo themselves do not.
+  if (await applyStoredOperation(operation, true)) redoStack.length = 0;
 }
 
+/** Kinds whose stored parameters fully determine an exact inverse. */
+const INVERTIBLE_KINDS: Record<string, string> = {
+  raise: 'lower',
+  lower: 'raise',
+  berm: 'trench',
+  trench: 'berm',
+};
+
 /**
- * Undo re-applies the inverse operation.
+ * Undo re-applies the exact inverse operation.
  *
- * Operations are stored, not meshes, so undo is an operation in its own right
- * and the log stays a faithful, replayable record (spec §12).
+ * Only raise/lower/berm/trench are invertible from the stored record; smooth,
+ * flatten and crater_stamp destroy information (the pre-edit surface is gone),
+ * so "undoing" them by re-applying anything would corrupt the terrain further
+ * — the honest behaviour is to refuse with an explanation. This replaced code
+ * whose fallback re-applied the SAME operation: undoing a crater stamped a
+ * second crater on top of the first.
  */
 async function undo(): Promise<void> {
   const op = undoStack.pop();
   if (!op) return;
-  redoStack.push(op);
-  const inverseKind: Record<string, string> = {
-    raise: 'lower',
-    lower: 'raise',
-    berm: 'trench',
-    trench: 'berm',
-  };
+
   const kind = String(op.kind);
-  const inverse: Record<string, unknown> = {
-    ...op,
-    kind: inverseKind[kind] ?? kind,
-    strengthMeters: Math.abs(op.strengthMeters as number),
-  };
-  try {
-    await client.call('terrain.applyOperation', { operation: inverse });
-    await loadDataset();
-    $('edit-status').textContent = `undid ${op.kind}`;
-  } catch (e) {
-    $('edit-status').textContent = describeError(e);
+  const inverseKind = INVERTIBLE_KINDS[kind];
+  if (!inverseKind) {
+    // Not invertible: put it back so the history stays truthful.
+    undoStack.push(op);
+    $('edit-status').textContent =
+      `cannot undo '${kind}': it is not invertible from the operation record ` +
+      `(the pre-edit surface is not stored). Regenerate to reset.`;
+    return;
+  }
+
+  const inverse = { ...op, kind: inverseKind };
+  // The inverse is NOT pushed onto the undo stack (it would undo the undo);
+  // the original op goes to the redo stack instead.
+  if (await applyStoredOperation(inverse, false)) {
+    redoStack.push(op);
+    $('edit-status').textContent = `undid ${kind}`;
+  } else {
+    undoStack.push(op); // failed — restore history
+  }
+}
+
+/**
+ * Redo re-applies the EXACT stored operation — not, as before, a new operation
+ * built from whatever brush and parameters the UI happens to have selected now.
+ */
+async function redo(): Promise<void> {
+  const op = redoStack.pop();
+  if (!op) return;
+  if (await applyStoredOperation(op, true)) {
+    $('edit-status').textContent = `redid ${String(op.kind)}`;
+  } else {
+    redoStack.push(op);
   }
 }
 
@@ -537,10 +615,7 @@ function wireUi(): void {
   $('btn-validate').addEventListener('click', () => void validate());
   $('btn-solar').addEventListener('click', () => void refreshSolar());
   $('btn-undo').addEventListener('click', () => void undo());
-  $('btn-redo').addEventListener('click', () => {
-    const op = redoStack.pop();
-    if (op) void applyBrushAt(op.centerXMeters as number, op.centerZMeters as number);
-  });
+  $('btn-redo').addEventListener('click', () => void redo());
 
   $('btn-new').addEventListener('click', () => {
     ($('cfg-seed') as HTMLInputElement).value = `site-${Date.now().toString(36)}`;

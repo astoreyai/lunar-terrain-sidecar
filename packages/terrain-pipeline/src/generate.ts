@@ -52,6 +52,7 @@ import {
   type DemRaster,
 } from '@lts/lunar-dem';
 import {
+  freshRimHeight,
   markRockSemantics,
   sampleCraterPopulation,
   sampleRockPopulation,
@@ -132,7 +133,22 @@ export async function generateTerrain(
   const layers: TerrainLayer[] = config.layers.map((l, i) => {
     const widthSamples = samplesForExtent(l.widthMeters, l.resolutionMeters);
     const heightSamples = samplesForExtent(l.lengthMeters, l.resolutionMeters);
-    const bounds = centeredBounds(l.widthMeters, l.lengthMeters);
+    // Bounds are derived from the SAMPLE GRID, not the requested extent. When
+    // widthMeters is not a multiple of the resolution (50 m at 0.3 m), the
+    // grid spans (samples-1)*res < widthMeters; declaring the requested extent
+    // anyway created a phantom strip inside the bounds with no data — height
+    // queries there returned NaN and the exporter's own spacing check failed
+    // on every export of such a configuration.
+    const spanX = (widthSamples - 1) * l.resolutionMeters;
+    const spanZ = (heightSamples - 1) * l.resolutionMeters;
+    if (Math.abs(spanX - l.widthMeters) > 1e-9 || Math.abs(spanZ - l.lengthMeters) > 1e-9) {
+      notes.push(
+        `${l.role} layer extent snapped to the sample grid: requested ` +
+          `${l.widthMeters}×${l.lengthMeters} m, realised ${spanX.toFixed(6)}×${spanZ.toFixed(6)} m ` +
+          `(${l.resolutionMeters} m/sample does not divide the requested extent).`,
+      );
+    }
+    const bounds = centeredBounds(spanX, spanZ);
     bounds.minX += l.centerXMeters;
     bounds.maxX += l.centerXMeters;
     bounds.minZ += l.centerZMeters;
@@ -331,6 +347,7 @@ export async function generateTerrain(
         model: config.craters.model,
         surfaceAgeGa: config.craters.surfaceAgeGyr,
         densityPerKm2: config.craters.densityPerSquareKilometer,
+        powerLawAnchorDiameterM: config.craters.minimumDiameterMeters,
         powerLawExponent: config.craters.powerLawExponent,
         demEffectiveResolutionM: layer.sourceEffectiveResolutionMeters,
         meanDegradation: config.craters.meanDegradation,
@@ -356,7 +373,7 @@ export async function generateTerrain(
           centerZMeters: a.centerZMeters,
           diameterMeters: a.diameterMeters,
           depthMeters: depth * (1 - a.degradation),
-          rimHeightMeters: a.diameterMeters * 0.04 * (1 - a.degradation) ** 2,
+          rimHeightMeters: freshRimHeight(a.diameterMeters) * (1 - a.degradation) ** 2,
           rimWidthMeters: a.diameterMeters * 0.1,
           floorRadiusRatio: 0.1 + 0.5 * a.degradation,
           ellipticity: a.ellipticity,

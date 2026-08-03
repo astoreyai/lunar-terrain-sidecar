@@ -22,6 +22,7 @@ import {
   normalAtWorld,
   parseConfig,
   slopeDegAtWorld,
+  recomputeVerticalBounds,
   SEMANTIC_CLASSES,
   type TerrainDataset,
   type TerrainLayer,
@@ -40,6 +41,7 @@ import {
   type TerrainDelta,
   type TerrainOperation,
 } from '@lts/terrain-protocol';
+import { buildLocalFrame, localToProjected, inverse } from '@lts/lunar-dem';
 import {
   horizonProfile,
   samplerFromArray,
@@ -59,6 +61,40 @@ const jobs = new Map<string, JobRecord>();
 const cancelFlags = new Map<string, { aborted: boolean }>();
 const session: Session = { tileSizeSamples: 256, deltas: [], operationLog: [] };
 let jobCounter = 0;
+/**
+ * Job id of the generate currently running, or null.
+ *
+ * The session is a single shared dataset, so two concurrent generates would
+ * race to install their results, and an edit applied mid-generation would be
+ * acknowledged and then silently destroyed when the new dataset lands. Rather
+ * than pretending to support concurrency the session model cannot deliver,
+ * one generate runs at a time and mutating calls are refused while it does —
+ * with a structured error, never a silent overwrite.
+ */
+let runningJobId: string | null = null;
+/** Bound on remembered job records; oldest finished jobs are pruned. */
+const MAX_JOB_RECORDS = 64;
+
+function pruneJobs(): void {
+  if (jobs.size <= MAX_JOB_RECORDS) return;
+  for (const [id, record] of jobs) {
+    if (jobs.size <= MAX_JOB_RECORDS) break;
+    if (record.status === 'complete' || record.status === 'failed' || record.status === 'cancelled') {
+      jobs.delete(id);
+    }
+  }
+}
+
+function requireNoRunningJob(action: string): void {
+  if (runningJobId !== null) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      `Cannot ${action} while generation job ${runningJobId} is running. ` +
+        'Wait for it to finish or cancel it first.',
+      { runningJobId },
+    );
+  }
+}
 
 function ok(id: JsonRpcRequest['id'], result: unknown): string {
   return JSON.stringify({ jsonrpc: '2.0', id: id ?? null, result });
@@ -160,7 +196,6 @@ function traversabilityAt(dataset: TerrainDataset, x: number, z: number) {
  */
 function reseatRocks(
   dataset: TerrainDataset,
-  layer: TerrainLayer,
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number },
 ): number {
   let moved = 0;
@@ -169,7 +204,11 @@ function reseatRocks(
     const rock = feature as RockFeature;
     const { x, z } = rock.position;
     if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue;
-    const ground = heightAtWorld(layer, x, z);
+    // Ground comes from the FINEST covering layer — the tier rocks were
+    // generated on and the tier the exporter validates burial against.
+    // Using the edited layer instead snapped rocks to a coarse surface that
+    // can differ by decimetres, failing rocks_burial_consistent.
+    const ground = elevationAt(dataset, x, z);
     if (!Number.isFinite(ground)) continue;
     const y = ground + rock.scale.y * (1 - 2 * rock.buriedFraction);
     if (y !== rock.position.y) {
@@ -271,9 +310,12 @@ async function handle(
           progress: 0,
           startedAt: new Date().toISOString(),
         };
+        requireNoRunningJob('start another generation');
         jobs.set(jobId, record);
+        pruneJobs();
         const flag = { aborted: false };
         cancelFlags.set(jobId, flag);
+        runningJobId = jobId;
 
         // Run asynchronously so the RPC returns the job id immediately.
         void (async () => {
@@ -326,6 +368,7 @@ async function handle(
                 : { code: 'TERRAIN_INTERNAL', message: String(e), details: {} };
           } finally {
             cancelFlags.delete(jobId);
+            runningJobId = null;
           }
         })();
 
@@ -400,11 +443,19 @@ async function handle(
       }
 
       case 'terrain.export': {
+        requireNoRunningJob('export');
         const dataset = requireDataset();
         const outDir = resolve(String(p.outputDirectory ?? './generated/export'));
+        const requested = (p.formats ?? {}) as Record<string, boolean>;
         const result = exportTerrain(dataset, {
           outputDirectory: outDir,
           tileSizeSamples: session.tileSizeSamples,
+          formats: {
+            exr: requested.exr ?? true,
+            png16: requested.png16 ?? true,
+            npy: requested.npy ?? false,
+            glb: requested.glb ?? true,
+          },
         });
         const report = validateDataset(outDir);
         return ok(req.id, {
@@ -433,6 +484,7 @@ async function handle(
       }
 
       case 'terrain.applyOperation': {
+        requireNoRunningJob('apply an operation');
         const dataset = requireDataset();
         const opInput = p.operation as Partial<TerrainOperation> | undefined;
         if (!opInput || typeof opInput.kind !== 'string') {
@@ -444,29 +496,58 @@ async function handle(
             a.horizontalResolutionMeters <= b.horizontalResolutionMeters ? a : b,
           );
 
+        // Every numeric parameter is checked finite BEFORE touching the
+        // heightfield. A NaN here would be committed into terrain data and
+        // acknowledged with a success delta, surfacing only much later as
+        // validation failures far from the cause.
+        const finite = (v: unknown, name: string, fallback: number): number => {
+          if (v === undefined) return fallback;
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            throw new TerrainError(
+              ERROR_CODES.INVALID_CONFIG,
+              `operation.${name} must be a finite number`,
+              { [name]: String(v) },
+            );
+          }
+          return v;
+        };
+        const finiteOpt = (v: unknown, name: string): number | undefined =>
+          v === undefined ? undefined : finite(v, name, 0);
+
         const op: TerrainOperation = {
           operationId: `op-${String(session.operationLog.length).padStart(6, '0')}`,
           kind: opInput.kind as TerrainOperation['kind'],
           layerId: layer.id,
-          centerXMeters: opInput.centerXMeters ?? 0,
-          centerZMeters: opInput.centerZMeters ?? 0,
-          radiusMeters: opInput.radiusMeters ?? 1,
-          strengthMeters: opInput.strengthMeters ?? 0.1,
-          falloff: opInput.falloff ?? 2,
-          targetElevationMeters: opInput.targetElevationMeters,
-          headingDegrees: opInput.headingDegrees,
-          lengthMeters: opInput.lengthMeters,
+          centerXMeters: finite(opInput.centerXMeters, 'centerXMeters', 0),
+          centerZMeters: finite(opInput.centerZMeters, 'centerZMeters', 0),
+          radiusMeters: finite(opInput.radiusMeters, 'radiusMeters', 1),
+          strengthMeters: finite(opInput.strengthMeters, 'strengthMeters', 0.1),
+          falloff: finite(opInput.falloff, 'falloff', 2),
+          targetElevationMeters: finiteOpt(opInput.targetElevationMeters, 'targetElevationMeters'),
+          headingDegrees: finiteOpt(opInput.headingDegrees, 'headingDegrees'),
+          lengthMeters: finiteOpt(opInput.lengthMeters, 'lengthMeters'),
           massConserving: opInput.massConserving ?? false,
           timestamp: new Date().toISOString(),
         };
+        if (op.radiusMeters <= 0) {
+          throw new TerrainError(ERROR_CODES.INVALID_CONFIG, 'operation.radiusMeters must be positive', {
+            radiusMeters: op.radiusMeters,
+          });
+        }
 
         const before = layerChecksum(layer);
         const result = applyOperation(layer, op);
+        // The edit moved the surface, so the layer's recorded vertical bounds
+        // are stale; exporting them would fail the exporter's own
+        // vertical-bounds validation on perfectly healthy data.
+        recomputeVerticalBounds(layer);
+        dataset.bounds.minY = Math.min(...dataset.layers.map((l) => l.bounds.minY));
+        dataset.bounds.maxY = Math.max(...dataset.layers.map((l) => l.bounds.maxY));
         // Rocks sit *on* the surface, so an edit that moves the ground must
         // move them with it. Without this, lowering terrain under a boulder
         // leaves it hanging in vacuum — which the exporter's
         // "no rock sits entirely above the terrain" check correctly rejected.
-        const reseated = reseatRocks(dataset, layer, result.bounds);
+        const reseated = reseatRocks(dataset, result.bounds);
         const delta = makeDelta(
           layer,
           op,
@@ -560,8 +641,20 @@ async function handle(
         const z = num(p, 'z');
         const layer = finestLayerAt(dataset, x, z);
         if (!layer?.masks.semantic) return ok(req.id, { x, z, semanticClass: null });
-        const col = Math.round((x - layer.bounds.minX) / layer.horizontalResolutionMeters);
-        const row = Math.round((z - layer.bounds.minZ) / layer.horizontalResolutionMeters);
+        const col = Math.max(
+          0,
+          Math.min(
+            layer.widthSamples - 1,
+            Math.round((x - layer.bounds.minX) / layer.horizontalResolutionMeters),
+          ),
+        );
+        const row = Math.max(
+          0,
+          Math.min(
+            layer.heightSamples - 1,
+            Math.round((z - layer.bounds.minZ) / layer.horizontalResolutionMeters),
+          ),
+        );
         const idx = layer.masks.semantic[row * layer.widthSamples + col];
         return ok(req.id, {
           x,
@@ -582,11 +675,26 @@ async function handle(
       case 'terrain.getSolar': {
         const dataset = requireDataset();
         const epoch = parseInstant(String(p.epochUtc ?? new Date().toISOString()));
-        const sp = solarPositionAtSite(
-          epoch,
-          dataset.origin.site.latitudeDeg,
-          dataset.origin.site.longitudeDeg,
-        );
+        // Optional local-frame offset: solar elevation is referenced to the
+        // observer's own local horizontal, which tilts by ~0.033°/km of
+        // offset from the site origin (|p|/R). At grazing polar sun that is
+        // not negligible on a kilometres-wide context layer, so a client
+        // comparing solar elevation against a horizon computed at (x, z)
+        // should ask for the sun at the same offset.
+        let siteLat = dataset.origin.site.latitudeDeg;
+        let siteLon = dataset.origin.site.longitudeDeg;
+        if (p.x !== undefined || p.z !== undefined) {
+          const frame = buildLocalFrame(siteLat, siteLon);
+          const proj = localToProjected(
+            frame,
+            p.x !== undefined ? num(p, 'x') : 0,
+            p.z !== undefined ? num(p, 'z') : 0,
+          );
+          const seleno = inverse(proj.x, proj.y);
+          siteLat = seleno.latitudeDeg;
+          siteLon = seleno.longitudeDeg;
+        }
+        const sp = solarPositionAtSite(epoch, siteLat, siteLon);
         return ok(req.id, {
           epochUtc: epoch.toISOString(),
           elevationDeg: sp.elevationDeg,
@@ -597,10 +705,13 @@ async function handle(
             latitudeDeg: sp.subSolar.latitudeDeg,
             longitudeDeg: sp.subSolar.longitudeDeg,
           },
+          site: { latitudeDeg: siteLat, longitudeDeg: siteLon },
           model: 'ephemeris',
           note:
             'Azimuth is clockwise from north; north is -Z. Elevation is above the geometric ' +
-            'horizon of the reference sphere and ignores local terrain — use terrain.getHorizon.',
+            'horizon of the reference sphere at the queried point and ignores local terrain — ' +
+            'use terrain.getHorizon (which measures the skyline from the same local ' +
+            'horizontal, since layers carry origin-referenced curvature removal).',
         });
       }
 

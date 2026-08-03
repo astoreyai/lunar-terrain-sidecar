@@ -210,6 +210,7 @@ func _on_connected() -> void:
 func _on_disconnected() -> void:
 	_set_status("disconnected", Color(0.55, 0.58, 0.62))
 	_info("disconnected")
+	_abort_generation("sidecar disconnected")
 
 
 func _on_connection_failed(reason: String) -> void:
@@ -217,6 +218,19 @@ func _on_connection_failed(reason: String) -> void:
 	_error(
 		"%s\nStart it with:  npm run serve   (or `lunar-terrain serve --port 8765`)" % reason
 	)
+	_abort_generation(reason)
+
+
+## A disconnect mid-generation previously left Generate/Regenerate disabled
+## forever and let the status poll loop die silently. Fail loudly and recover.
+func _abort_generation(reason: String) -> void:
+	if _generate_button.disabled or _regenerate_button.disabled:
+		_error("generation aborted: %s" % reason)
+	_generate_button.disabled = false
+	_regenerate_button.disabled = false
+	_current_job = ""
+	_pending.clear()
+	_stage_label.text = "idle"
 
 
 func _set_status(text: String, color: Color) -> void:
@@ -330,7 +344,11 @@ func _on_response(id: int, result: Variant, error: Dictionary) -> void:
 func _poll_status() -> void:
 	if _current_job.is_empty():
 		return
-	_pending[client.call_method("terrain.getStatus", {"jobId": _current_job})] = "status"
+	var id: int = client.call_method("terrain.getStatus", {"jobId": _current_job})
+	if id < 0:
+		# Not connected any more; _abort_generation has (or will) run.
+		return
+	_pending[id] = "status"
 
 
 func _handle_status(status: Dictionary) -> void:
@@ -340,9 +358,13 @@ func _handle_status(status: Dictionary) -> void:
 
 	match state:
 		"queued", "running":
-			# Re-poll on the next frame batch rather than spinning.
-			await get_tree().create_timer(0.2).timeout
-			_poll_status()
+			# Re-poll shortly. Connected as a one-shot signal rather than
+			# awaited: an await would resume on this dock even after the plugin
+			# freed it (disable-mid-generation), erroring on a dead instance.
+			# A signal connection to a freed Object is dropped automatically.
+			var tree := get_tree()
+			if tree != null:
+				tree.create_timer(0.2).timeout.connect(_poll_status, CONNECT_ONE_SHOT)
 		"complete":
 			_generate_button.disabled = false
 			_regenerate_button.disabled = false

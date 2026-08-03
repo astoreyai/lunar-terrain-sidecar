@@ -197,7 +197,12 @@ describe.skipIf(!existsSync(SITE01))('resampling into a local tangent frame', ()
     });
 
     expect(res.noDataFraction).toBe(0);
-    expect(res.sourcePixelsPerSample).toBeCloseTo(1, 9);
+    // Requested 5 m TRUE metres from a 5 m/px PROJECTED product: the ratio is
+    // exactly the conformal scale factor at the site latitude (1.0000221 at
+    // 89.46 S), not 1.0 — both sides are now expressed in ground metres.
+    expect(res.sourcePixelsPerSample).toBeCloseTo(frame.projectionScale, 9);
+    expect(res.sourcePixelsPerSample).toBeGreaterThan(1);
+    expect(res.sourcePixelsPerSample).toBeLessThan(1.001);
     // Rebased to the window mean, so elevations straddle zero.
     let min = Infinity;
     let max = -Infinity;

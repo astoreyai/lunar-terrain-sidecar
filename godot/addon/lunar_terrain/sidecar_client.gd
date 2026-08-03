@@ -46,6 +46,8 @@ func connect_to_sidecar(url: String) -> void:
 func close() -> void:
 	_socket.close()
 	state = State.DISCONNECTED
+	# An explicit close orphans in-flight requests the same way a drop does.
+	_fail_inflight("client closed the connection")
 
 
 func is_connected_to_sidecar() -> bool:
@@ -68,11 +70,24 @@ func poll() -> void:
 			if state != State.DISCONNECTED:
 				var was_connecting := state == State.CONNECTING
 				state = State.DISCONNECTED
+				# Fail every in-flight request BEFORE announcing the disconnect.
+				# Without this, a caller awaiting `response` for a request that
+				# died with the socket suspends forever — which locked up the
+				# dock's poll loop and hung the integration harness.
+				_fail_inflight("sidecar disconnected")
 				if was_connecting:
 					last_error = "could not reach the sidecar"
 					connection_failed.emit(last_error)
 				else:
 					sidecar_disconnected.emit()
+
+
+## Emit an error response for every request that will never be answered.
+func _fail_inflight(reason: String) -> void:
+	var ids := _inflight.keys()
+	_inflight.clear()
+	for id in ids:
+		response.emit(int(id), null, {"code": -32001, "message": reason})
 
 
 func _handle_packet(text: String) -> void:

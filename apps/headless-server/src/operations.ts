@@ -33,9 +33,16 @@ function falloffWeight(d: number, radius: number, exponent: number): number {
 export function applyOperation(layer: TerrainLayer, op: TerrainOperation): ApplyResult {
   const res = layer.horizontalResolutionMeters;
   const cellArea = res * res;
-  const reach = op.kind === 'trench' || op.kind === 'berm'
-    ? Math.max(op.radiusMeters, (op.lengthMeters ?? 0) / 2 + op.radiusMeters)
-    : op.radiusMeters;
+  // crater_stamp writes its rim Gaussian out to u = 1.3 (see the profile
+  // below), so its bounding box must reach 1.3·radius. With reach = radius the
+  // rim survived only in the square bbox corners, producing a four-lobed
+  // crater whose rim existed on the diagonals and vanished along the axes.
+  const reach =
+    op.kind === 'trench' || op.kind === 'berm'
+      ? Math.max(op.radiusMeters, (op.lengthMeters ?? 0) / 2 + op.radiusMeters)
+      : op.kind === 'crater_stamp'
+        ? op.radiusMeters * 1.3
+        : op.radiusMeters;
 
   const colMin = Math.max(0, Math.floor((op.centerXMeters - reach - layer.bounds.minX) / res));
   const colMax = Math.min(

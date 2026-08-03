@@ -18,8 +18,10 @@ export const LUNAR_REFERENCE_RADIUS_M = 1_737_400.0;
 /**
  * Obliquity of the lunar equator to the ecliptic, degrees.
  *
- * 1.5424° (Archinal et al. 2011). This is why the sub-solar latitude, and
- * hence the solar elevation at a lunar pole, is confined to ±1.54°.
+ * 1.5424° (Archinal et al. 2011) for the mean equator. The realised sub-solar
+ * latitude envelope is slightly wider — about ±1.59° — because the pole
+ * librates and the Sun sits marginally off the ecliptic as seen from the
+ * Moon; "±1.54°" is the mean-obliquity shorthand, not the extreme.
  */
 export const LUNAR_OBLIQUITY_TO_ECLIPTIC_DEG = 1.5424;
 

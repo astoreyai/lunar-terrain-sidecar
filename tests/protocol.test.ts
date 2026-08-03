@@ -259,6 +259,97 @@ describe('sidecar protocol', () => {
     expect(mb.relativeError).toBeLessThan(0.01);
   });
 
+  it('rejects non-finite operation parameters instead of committing NaN', async () => {
+    // Regression: a malformed strengthMeters previously flowed into the
+    // heightfield as NaN with a success response, surfacing only much later
+    // as validation failures far from the cause.
+    const r = await rpc('terrain.applyOperation', {
+      operation: { kind: 'raise', radiusMeters: 2, strengthMeters: 'oops' },
+    });
+    expect(r.error.code).toBe(RPC_CODES.TERRAIN_ERROR);
+    expect(r.error.data.code).toBe('TERRAIN_INVALID_CONFIG');
+
+    // The terrain must be untouched: the origin still answers finitely.
+    const h = (await rpc('terrain.getHeight', { x: 0, z: 0 })).result;
+    expect(Number.isFinite(h.elevationM)).toBe(true);
+  });
+
+  it('keeps vertical bounds current after an edit', async () => {
+    // Regression: edits mutated heights but not layer bounds, so an
+    // export-after-edit failed the exporter's own vertical-bounds check on
+    // healthy data. A big raise followed by an export must still validate.
+    await rpc('terrain.applyOperation', {
+      operation: {
+        kind: 'raise',
+        layerId: 'operational-1',
+        centerXMeters: -5,
+        centerZMeters: -5,
+        radiusMeters: 2,
+        strengthMeters: 3.0,
+        falloff: 2,
+      },
+    });
+    const r = (await rpc('terrain.export', { outputDirectory: WORK })).result;
+    expect(r.validation.passed).toBe(true);
+    expect(r.validation.errors).toBe(0);
+  });
+
+  it('refuses to run two generation jobs concurrently', async () => {
+    // The session holds ONE dataset; a second concurrent generate would race
+    // to install its result and could silently destroy acknowledged edits.
+    //
+    // The overlap window only exists when generation AWAITS something: without
+    // a DEM the pipeline is pure CPU work, blocks the event loop, and always
+    // finishes before a second request can even be parsed — a no-DEM version
+    // of this test found both jobs "accepted" and proved nothing. The DEM read
+    // yields, so the second request lands mid-generation.
+    const demConfig = {
+      ...smallConfig,
+      terrainId: 'protocol_concurrent',
+      dem: {
+        enabled: true,
+        path: '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif',
+        applyToRoles: ['context', 'operational'],
+        effectiveResolutionMeters: 17.5,
+      },
+      site: { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 },
+    };
+    const first = await rpc('terrain.generate', { config: demConfig });
+    const second = await rpc('terrain.generate', { config: demConfig });
+
+    // Exactly one must be accepted; the other must fail with a structured
+    // error naming the running job.
+    const accepted = [first, second].filter((r) => r.result?.jobId);
+    const refused = [first, second].filter((r) => r.error);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0].error.data.code).toBe('TERRAIN_INVALID_CONFIG');
+    expect(refused[0].error.data.details.runningJobId).toBe(accepted[0].result.jobId);
+
+    // Wait the accepted one out so later tests see a stable session.
+    const jobId = accepted[0].result.jobId;
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const s = (await rpc('terrain.getStatus', { jobId })).result;
+      if (s.status === 'complete' || s.status === 'failed') break;
+    }
+  }, 300_000);
+
+  it('honours requested export formats', async () => {
+    const dir = `${WORK}-formats`;
+    const r = (await rpc('terrain.export', {
+      outputDirectory: dir,
+      formats: { exr: false, png16: false, glb: false },
+    })).result;
+    expect(r.validation.passed).toBe(true);
+    const manifest = (await rpc('terrain.getManifest', { directory: dir })).result;
+    const kinds = new Set(manifest.artifacts.map((a: { kind: string }) => a.kind));
+    expect(kinds.has('heightmap_raw_f32')).toBe(true); // always written
+    expect(kinds.has('heightmap_exr_f32')).toBe(false);
+    expect(kinds.has('heightmap_png_u16')).toBe(false);
+    expect(kinds.has('tile_glb')).toBe(false);
+  });
+
   it('reports a cancel request for an unknown job as a structured error', async () => {
     const r = await rpc('terrain.cancel', { jobId: 'terrain-job-99999' });
     expect(r.error.code).toBe(RPC_CODES.TERRAIN_ERROR);

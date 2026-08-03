@@ -139,7 +139,10 @@ func _load_heights(layer: LayerData) -> bool:
 		errors.append("%s: expected %d bytes, got %d" % [path, expected * 4, bytes.size()])
 		return false
 
-	# Little-endian float32, row-major — the manifest's declared encoding.
+	# Row-major float32. to_float32_array() is NATIVE-endian; the file is
+	# little-endian per the manifest. Every platform Godot 4 ships on is
+	# little-endian, so these coincide — noted so a future big-endian port
+	# knows this is the line to fix rather than trusting the old comment.
 	layer.heights = bytes.to_float32_array()
 	return layer.heights.size() == expected
 
@@ -335,22 +338,24 @@ func build_layer_mesh(layer: LayerData) -> ArrayMesh:
 
 
 func _build_rocks(root: Node3D) -> void:
-	var path := _root_dir.path_join("rocks.json")
-	if not FileAccess.file_exists(path):
-		return
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if typeof(parsed) != TYPE_DICTIONARY:
-		errors.append("rocks.json did not parse as an object")
-		return
-
+	# The rock nodes are ALWAYS created, empty if need be: consumers address
+	# them by name (`get_node("PhysicalRocks")`), and a rock-free export used
+	# to crash them by silently omitting the nodes.
 	var physical: Array = []
 	var visual: Array = []
-	for rock_variant in (parsed as Dictionary).get("rocks", []):
-		var rock: Dictionary = rock_variant
-		if bool(rock.get("physical", false)):
-			physical.append(rock)
+
+	var path := _root_dir.path_join("rocks.json")
+	if FileAccess.file_exists(path):
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+		if typeof(parsed) != TYPE_DICTIONARY:
+			errors.append("rocks.json did not parse as an object")
 		else:
-			visual.append(rock)
+			for rock_variant in (parsed as Dictionary).get("rocks", []):
+				var rock: Dictionary = rock_variant
+				if bool(rock.get("physical", false)):
+					physical.append(rock)
+				else:
+					visual.append(rock)
 
 	root.add_child(_make_rock_multimesh("PhysicalRocks", physical))
 	root.add_child(_make_rock_multimesh("VisualRocks", visual))
