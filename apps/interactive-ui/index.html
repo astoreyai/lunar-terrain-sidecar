@@ -114,6 +114,9 @@
               <button type="button" data-brush="crater_stamp">crater</button>
               <button type="button" data-brush="trench">trench</button>
               <button type="button" data-brush="berm">berm</button>
+              <button type="button" data-brush="slope">slope</button>
+              <button type="button" data-brush="noise">noise</button>
+              <button type="button" data-brush="semantic_paint">paint</button>
             </div>
             <h2>Construction</h2>
             <div id="construction-buttons" class="chips">
@@ -132,6 +135,26 @@
             <label id="param-length" hidden>Length m<input id="brush-length" type="number" step="0.5" value="10" /></label>
             <label id="param-target-auto" class="check" hidden><input id="brush-target-auto" type="checkbox" checked /> Auto target (surface height at click)</label>
             <label id="param-target" hidden>Target elevation m<input id="brush-target" type="number" step="0.05" value="0" /></label>
+            <label id="param-noise-seed" hidden>Noise seed<input id="brush-noise-seed" type="text" value="ui-noise-1" spellcheck="false" /></label>
+            <label id="param-semantic-class" hidden>Semantic class
+              <!-- The 12 class names below are SEMANTIC_CLASSES from
+                   packages/shared-types/src/terrain.ts, in index order (the
+                   on-disk encoding is append-only, so the order is stable). -->
+              <select id="brush-semantic-class">
+                <option value="unknown">unknown</option>
+                <option value="flat_regolith">flat_regolith</option>
+                <option value="rough_regolith">rough_regolith</option>
+                <option value="crater_floor">crater_floor</option>
+                <option value="crater_wall">crater_wall</option>
+                <option value="crater_rim">crater_rim</option>
+                <option value="rock_field">rock_field</option>
+                <option value="berm">berm</option>
+                <option value="trench">trench</option>
+                <option value="compacted_surface">compacted_surface</option>
+                <option value="disturbed_regolith">disturbed_regolith</option>
+                <option value="unsafe_slope">unsafe_slope</option>
+              </select>
+            </label>
             <div id="polygon-controls" class="row" hidden>
               <button id="btn-polygon-apply" type="button">Apply polygon</button>
               <button id="btn-polygon-clear" type="button">Clear</button>
@@ -141,6 +164,20 @@
               <button id="btn-redo" type="button">Redo</button>
             </div>
             <p class="note" id="edit-status">Edits are stored as replayable operations, never as mutated meshes.</p>
+          </section>
+
+          <section class="panel" data-panel="history">
+            <h2>History</h2>
+            <div class="row">
+              <button id="btn-history-refresh" type="button">Refresh</button>
+              <button id="btn-history-replay" type="button">Re-apply log</button>
+            </div>
+            <div id="history-rows" class="log">not fetched — press Refresh</div>
+            <p class="note">The server's full operation log (terrain.getOperationLog).
+              "Re-apply log" replays it onto the CURRENT, already-edited terrain, so
+              every edit is applied a second time on top of itself. The deterministic
+              replay contract (spec §12) is regenerate-then-replay: same seed, same
+              log, same terrain.</p>
           </section>
 
           <section class="panel" data-panel="visualization">

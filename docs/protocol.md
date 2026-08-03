@@ -135,7 +135,7 @@ Operation kinds:
 
 Everything from `trench` down is a **construction feature** (spec §11): applying one also appends a `ConstructionFeature` record (measured mass balance at 1500 kg/m³ bulk density, before/after elevation stats, semantic class) to the dataset's feature manifest, which is exported to `features_construction.json` alongside `craters.json` / `rocks.json`. The six kinds from `ramp` down additionally stamp the semantic mask over the samples they shape (`compacted_surface` for ramp/pad, `berm` for spoil_pile/polygonal_fill, `disturbed_regolith` for wheel_track, `trench` for polygonal_cut); the mass-conserving redistribution ring is left unmarked — it is borrowed regolith, not the feature.
 
-`TerrainDelta` fields: `deltaId` (`delta-NNNNNN`), `sequenceNumber`, `timestamp`, `affectedBounds` `{minX,minZ,maxX,maxZ}`, `changedTiles` (tile ids intersecting the bounds, from `tilesInBounds`), `operations`, `previousChecksum` / `resultingChecksum` (SHA-256 of the layer's raw heightfield bytes, `layerChecksum` — deltas chain), `previousMaskChecksum` / `resultingMaskChecksum` (SHA-256 of the layer's semantic mask, populated for every kind — without them a `semantic_paint`, which moves no height, would produce a delta claiming nothing changed), and `massBalance` `{removedVolumeM3, depositedVolumeM3, netVolumeM3, relativeError}`. Mass-conserving mode redeposits the displaced volume in an annulus between `radius` and `1.6×radius`; the residual is **measured and reported**, not assumed zero.
+`TerrainDelta` fields: `deltaId` (`delta-NNNNNN`), `sequenceNumber`, `timestamp`, `affectedBounds` `{minX,minZ,maxX,maxZ}`, `changedTiles` (tile ids intersecting the bounds, from `tilesInBounds`), `operations`, `previousChecksum` / `resultingChecksum` (SHA-256 of the layer's raw heightfield bytes, `layerChecksum` — deltas chain per edited layer), `previousMaskChecksum` / `resultingMaskChecksum` (SHA-256 of the layer's semantic mask, populated for every kind — without them a `semantic_paint`, which moves no height, would produce a delta claiming nothing changed), and `massBalance` `{removedVolumeM3, depositedVolumeM3, netVolumeM3, relativeError}`. Mass-conserving mode redeposits the displaced volume in an annulus between `radius` and `1.6×radius`; the residual is **measured and reported**, not assumed zero.
 
 Undo semantics live in the client, not the protocol: only `raise/lower/berm/trench` have exact inverses from the stored record; `smooth`, `flatten` and `crater_stamp` destroy information and cannot be undone (`INVERTIBLE_KINDS` in `apps/interactive-ui/src/main.ts`; see [known-limitations.md](known-limitations.md)).
 
@@ -172,3 +172,15 @@ Structured failure (missing DEM):
 ```
 
 Elevation values in the examples above are illustrative of shape, not recorded transcripts; field names and structure are verbatim from `server.ts`.
+
+
+### Checksum chain scope
+
+Delta checksums (height and semantic-mask) are computed over the **edited
+layer only**. The chain property — each delta's `previousChecksum` equalling
+its predecessor's `resultingChecksum` — therefore holds **per layer**: two
+consecutive deltas on different layers do not chain to each other, and the
+`finalChecksum`/`finalMaskChecksum` returned by `terrain.replayLog` describe
+the last-edited layer, not the whole dataset. A multi-layer replay is fully
+verified by comparing the per-layer checksums of the last delta touching each
+layer. The mask checksum covers `masks.semantic`; other masks are not hashed.

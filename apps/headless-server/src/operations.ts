@@ -16,6 +16,7 @@ import {
   ERROR_CODES,
   SEMANTIC_CLASSES,
   TerrainError,
+  heightAtWorld,
   semanticIndex,
   type SemanticClass,
   type TerrainLayer,
@@ -54,6 +55,13 @@ export interface ApplyResult {
    * then dominated by grid aliasing, not geometry.
    */
   aliasingWarning?: string;
+  /**
+   * True when the operation touched no samples and painted nothing — e.g. a
+   * sub-cell radius or an off-layer centre. The record still enters the
+   * operation log (it is a valid, replayable no-op), but the caller is told
+   * plainly instead of receiving an indistinguishable success.
+   */
+  noEffect?: boolean;
   /**
    * Present when a spoil pile's requested height exceeded the regolith
    * angle-of-repose limit and was clamped (spec §11). Reported, never silent.
@@ -210,17 +218,26 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       // A slope without a direction is meaningless, so the heading is
       // required — defaulting it to north would silently tilt the wrong way.
       requireFinite(op.headingDegrees, 'headingDegrees', op.kind);
-      // The plane passes through the click point's CURRENT elevation:
-      // capture it before anything is mutated.
-      const c = Math.max(
-        0,
-        Math.min(layer.widthSamples - 1, Math.round((op.centerXMeters - layer.bounds.minX) / res)),
-      );
-      const r = Math.max(
-        0,
-        Math.min(layer.heightSamples - 1, Math.round((op.centerZMeters - layer.bounds.minZ) / res)),
-      );
-      slopeCenterElev = layer.heightData[r * layer.widthSamples + c];
+      // The plane passes through the click point's CURRENT elevation —
+      // BILINEAR at the exact click point, captured before mutation. The
+      // earlier nearest-sample capture carried up to half a cell of anchor
+      // error, and when the click point fell outside the layer the clamped
+      // sample pivoted against the un-clamped point, converting the offset
+      // into a spurious uniform raise or cut of up to ±strengthMeters. An
+      // off-layer pivot is now a structured error instead.
+      slopeCenterElev = heightAtWorld(layer, op.centerXMeters, op.centerZMeters);
+      if (!Number.isFinite(slopeCenterElev)) {
+        throw new TerrainError(
+          ERROR_CODES.INVALID_CONFIG,
+          `operation centre (${op.centerXMeters}, ${op.centerZMeters}) lies outside layer ` +
+            `'${layer.id}' — a slope's pivot elevation must come from the layer it tilts`,
+          {
+            centerXMeters: op.centerXMeters,
+            centerZMeters: op.centerZMeters,
+            layerBounds: layer.bounds,
+          },
+        );
+      }
       break;
     }
     case 'noise': {
@@ -823,6 +840,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       max: touched ? afterMax : 0,
       mean: touched ? afterSum / touched : 0,
     },
+    ...(touched === 0 && (!shapeSet || shapeSet.size === 0) ? { noEffect: true } : {}),
     ...(featureBounds ? { featureBounds } : {}),
     ...(featureBefore ? { featureElevationBefore: featureBefore } : {}),
     ...(featureAfter ? { featureElevationAfter: featureAfter } : {}),

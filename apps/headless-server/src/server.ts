@@ -287,11 +287,27 @@ function performOperation(opInput: Partial<TerrainOperation> | undefined) {
       { kind: opInput.kind, supported: [...OPERATION_KINDS] },
     );
   }
-  const layer =
-    dataset.layers.find((l) => l.id === opInput.layerId) ??
-    dataset.layers.reduce((a, b) =>
+  // The finest-layer fallback exists for an OMITTED layerId only. A record
+  // that names a layer which does not exist must be a structured error: a
+  // replayed log from a different configuration previously fell through to
+  // the finest layer and re-applied every recorded edit onto the wrong
+  // terrain with a success response — silent cross-dataset corruption.
+  let layer: TerrainLayer;
+  if (opInput.layerId !== undefined) {
+    const named = dataset.layers.find((l) => l.id === opInput.layerId);
+    if (!named) {
+      throw new TerrainError(
+        ERROR_CODES.INVALID_CONFIG,
+        `operation.layerId '${opInput.layerId}' does not exist in this dataset`,
+        { layerId: opInput.layerId, availableLayers: dataset.layers.map((l) => l.id) },
+      );
+    }
+    layer = named;
+  } else {
+    layer = dataset.layers.reduce((a, b) =>
       a.horizontalResolutionMeters <= b.horizontalResolutionMeters ? a : b,
     );
+  }
 
   // Every numeric parameter is checked finite BEFORE touching the
   // heightfield. A NaN here would be committed into terrain data and

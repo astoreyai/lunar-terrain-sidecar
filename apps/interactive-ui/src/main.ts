@@ -449,10 +449,80 @@ async function applyStoredOperation(
           `by ${r.reposeClamp.reposeAngleDeg} deg repose`
         : '');
     await loadDataset();
+    // Keep the history panel current once the user has looked at it; before
+    // the first Refresh there is nothing on screen to keep in sync.
+    if (historyFetched && client.connected) void refreshHistory();
     return true;
   } catch (e) {
     $('edit-status').textContent = describeError(e);
     return false;
+  }
+}
+
+// ----------------------------------------------------------------- history
+
+/** True once the user has opened (refreshed) the History panel. */
+let historyFetched = false;
+
+interface OperationLogEntry {
+  kind: string;
+  radiusMeters: number;
+  timestamp: string;
+  [key: string]: unknown;
+}
+
+/** History inspection (spec §12): render the server's operation log. */
+async function refreshHistory(): Promise<void> {
+  if (!client.connected) return;
+  historyFetched = true;
+  const host = $('history-rows');
+  try {
+    const r = await client.call<{ operations: OperationLogEntry[] }>('terrain.getOperationLog');
+    host.textContent = '';
+    if (r.operations.length === 0) {
+      host.textContent = 'no operations recorded';
+      return;
+    }
+    r.operations.forEach((op, i) => {
+      const row = document.createElement('div');
+      row.className = 'history-row';
+      // Time-of-day only — a full ISO stamp per row would drown the kind.
+      const tod = op.timestamp ? new Date(op.timestamp).toISOString().slice(11, 19) : '—';
+      row.textContent = `#${i} ${op.kind} r=${Number(op.radiusMeters).toFixed(1)} m ${tod}`;
+      host.appendChild(row);
+    });
+  } catch (e) {
+    host.textContent = describeError(e);
+  }
+}
+
+/**
+ * Re-apply the full operation log onto the CURRENT terrain.
+ *
+ * terrain.replayLog runs each record through the applyOperation path against
+ * whatever the terrain holds now — it does not reset first. The deterministic
+ * replay contract (spec §12) is regenerate-then-replay; applied here, on an
+ * already-edited terrain, every edit lands a second time on top of itself,
+ * which is why the button says "Re-apply log", not "Restore".
+ */
+async function replayHistory(): Promise<void> {
+  if (!client.connected) return;
+  try {
+    const log = await client.call<{ operations: OperationLogEntry[] }>('terrain.getOperationLog');
+    if (log.operations.length === 0) {
+      $('edit-status').textContent = 'operation log is empty — nothing to re-apply';
+      return;
+    }
+    const r = await client.call<{ applied: number; finalChecksum: string }>('terrain.replayLog', {
+      operations: log.operations,
+    });
+    $('edit-status').textContent =
+      `re-applied ${r.applied} operation(s) on top of the current terrain · ` +
+      `checksum ${r.finalChecksum.slice(0, 12)}…`;
+    await loadDataset();
+    await refreshHistory();
+  } catch (e) {
+    $('edit-status').textContent = describeError(e);
   }
 }
 
@@ -487,9 +557,13 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
     return;
   }
   const num = (id: string) => Number(($(id) as HTMLInputElement).value);
-  const heading = HEADING_KINDS.has(activeBrush) ? num('brush-heading') : 0;
+  // `slope` descends along its (required) heading — an ADR 0002 azimuth,
+  // clockwise from north — so it reads the same heading field the
+  // construction kinds use.
+  const usesHeading = HEADING_KINDS.has(activeBrush) || activeBrush === 'slope';
+  const heading = usesHeading ? num('brush-heading') : 0;
   const length = HEADING_KINDS.has(activeBrush) ? num('brush-length') : num('brush-radius') * 4;
-  const operation = {
+  const operation: Record<string, unknown> = {
     kind: activeBrush,
     centerXMeters: x,
     centerZMeters: z,
@@ -501,6 +575,14 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
     lengthMeters: length,
     targetElevationMeters: resolveTargetElevation(x, z),
   };
+  // The server requires these per kind and refuses their absence with a
+  // structured error (protocol.md kind table).
+  if (activeBrush === 'noise') {
+    operation.noiseSeed = ($('brush-noise-seed') as HTMLInputElement).value;
+  }
+  if (activeBrush === 'semantic_paint') {
+    operation.semanticClass = ($('brush-semantic-class') as HTMLSelectElement).value;
+  }
   // A NEW stroke invalidates the redo history; undo/redo themselves do not.
   if (await applyStoredOperation(operation, true)) redoStack.length = 0;
 }
@@ -545,10 +627,14 @@ function clearPolygon(announce: boolean): void {
 /** Show only the parameter fields the active brush actually uses. */
 function updateBrushParamVisibility(): void {
   const kind = activeBrush ?? '';
-  $('param-heading').hidden = !HEADING_KINDS.has(kind);
+  // `slope` shares the heading field: its gradient descends along an
+  // ADR 0002 azimuth exactly like the construction kinds' axes.
+  $('param-heading').hidden = !(HEADING_KINDS.has(kind) || kind === 'slope');
   $('param-length').hidden = !HEADING_KINDS.has(kind);
   $('param-target-auto').hidden = !TARGET_KINDS.has(kind);
   $('param-target').hidden = !TARGET_KINDS.has(kind);
+  $('param-noise-seed').hidden = kind !== 'noise';
+  $('param-semantic-class').hidden = kind !== 'semantic_paint';
   $('polygon-controls').hidden = !POLYGON_KINDS.has(kind);
 }
 
@@ -564,7 +650,8 @@ const INVERTIBLE_KINDS: Record<string, string> = {
  * Undo re-applies the exact inverse operation.
  *
  * Only raise/lower/berm/trench are invertible from the stored record; smooth,
- * flatten, crater_stamp and every construction kind (ramp, pad, spoil_pile,
+ * flatten, crater_stamp, slope, noise, semantic_paint (the overwritten mask
+ * classes are not stored) and every construction kind (ramp, pad, spoil_pile,
  * wheel_track, polygonal_cut, polygonal_fill) destroy information (the
  * pre-edit surface is gone),
  * so "undoing" them by re-applying anything would corrupt the terrain further
@@ -715,6 +802,8 @@ function wireUi(): void {
   $('btn-solar').addEventListener('click', () => void refreshSolar());
   $('btn-undo').addEventListener('click', () => void undo());
   $('btn-redo').addEventListener('click', () => void redo());
+  $('btn-history-refresh').addEventListener('click', () => void refreshHistory());
+  $('btn-history-replay').addEventListener('click', () => void replayHistory());
 
   $('btn-new').addEventListener('click', () => {
     ($('cfg-seed') as HTMLInputElement).value = `site-${Date.now().toString(36)}`;

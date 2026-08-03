@@ -146,7 +146,10 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
 
     await page.goto(`http://127.0.0.1:${UI_PORT}/`, { waitUntil: 'load' });
     await page.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
-  }, 180_000);
+    // 300 s: the boot (generate + Vite + Chromium) takes ~80 s alone on an
+    // idle machine; a full-suite run shares the CPU with eight other files,
+    // and 180 s proved flake-prone under that contention.
+  }, 300_000);
 
   afterAll(async () => {
     await page?.close();
@@ -434,6 +437,83 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     expect(existsSync(join(SHOTS, '06-construction.png'))).toBe(true);
   });
 
+  it('renders the slope, noise, and paint brush chips', async () => {
+    // Iteration-5 kinds join the basic brush row (protocol.md kind table).
+    for (const kind of ['slope', 'noise', 'semantic_paint']) {
+      expect(
+        await isVisible(page, `#brush-buttons button[data-brush="${kind}"]`),
+        kind,
+      ).toBe(true);
+    }
+    // Activating paint reveals its class picker, populated with the full
+    // 12-name SEMANTIC_CLASSES set from packages/shared-types/src/terrain.ts.
+    await page.click('#brush-buttons button[data-brush="semantic_paint"]');
+    await waitForClass(page, '#brush-buttons button[data-brush="semantic_paint"]', 'active', 5_000);
+    expect(await isVisible(page, '#param-semantic-class')).toBe(true);
+    expect(await page.locator('#brush-semantic-class option').count()).toBe(12);
+  });
+
+  it('paints a semantic class and the inspector reads it back', async () => {
+    // The paint chip is active from the previous test; re-activate if not
+    // (chips toggle, so a blind click could deactivate it).
+    const chip = page.locator('#brush-buttons button[data-brush="semantic_paint"]');
+    if (!((await chip.getAttribute('class')) ?? '').includes('active')) {
+      await chip.click();
+    }
+    await waitForClass(page, '#brush-buttons button[data-brush="semantic_paint"]', 'active', 5_000);
+    await page.selectOption('#brush-semantic-class', 'compacted_surface');
+    await page.fill('#brush-radius', '2');
+
+    const box = (await page.locator('#canvas').boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await page.mouse.click(cx, cy);
+
+    // semantic_paint moves no height, so the delta reports zero volumes —
+    // but it must still produce a delta id (its mask checksums changed).
+    await waitForText(page, '#edit-status', 'delta-', 120_000);
+    expect(await textOf(page, '#edit-status')).toMatch(/delta-\d+/);
+
+    // Hover the painted spot: the inspector's semantic readout comes from the
+    // authoritative terrain.getSemanticClass, not the preview mesh. Point
+    // queries are throttled (one in flight), so nudge the pointer until the
+    // readout lands.
+    const deadline = Date.now() + 30_000;
+    let semantic = '';
+    while (Date.now() < deadline) {
+      await page.mouse.move(cx + 40, cy + 40);
+      await page.mouse.move(cx, cy);
+      await page.waitForTimeout(300);
+      semantic = await textOf(page, '#insp-semantic');
+      if (semantic === 'compacted_surface') break;
+    }
+    expect(semantic).toBe('compacted_surface');
+  }, 200_000);
+
+  it('lists the operation history including the semantic paint', async () => {
+    await page.click('#btn-history-refresh');
+    // Every edit this suite applied is in the server's log; the paint above
+    // guarantees at least one row and pins its kind.
+    await waitForText(page, '#history-rows', 'semantic_paint', 30_000);
+    const rows = page.locator('#history-rows .history-row');
+    expect(await rows.count()).toBeGreaterThanOrEqual(1);
+    // Each row is index, kind, radius, time-of-day.
+    expect(await textOf(page, '#history-rows')).toMatch(/#\d+ semantic_paint r=2\.0 m \d{2}:\d{2}:\d{2}/);
+  });
+
+  it('refuses to undo the semantic paint with the honest message', async () => {
+    // The overwritten mask classes are not stored in the operation record,
+    // so undo must refuse rather than guess.
+    await page.click('#btn-undo');
+    await waitForText(page, '#edit-status', 'not invertible', 10_000);
+    expect(await textOf(page, '#edit-status')).toContain("cannot undo 'semantic_paint'");
+  });
+
+  it('captures the history screenshot', async () => {
+    await page.screenshot({ path: join(SHOTS, '07-history.png') });
+    expect(existsSync(join(SHOTS, '07-history.png'))).toBe(true);
+  });
+
   it('writes screenshots for visual inspection', () => {
     for (const name of [
       '01-lit-terrain.png',
@@ -444,6 +524,7 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
       '04-topdown.png',
       '05-after-edit.png',
       '06-construction.png',
+      '07-history.png',
     ]) {
       expect(existsSync(join(SHOTS, name))).toBe(true);
     }
