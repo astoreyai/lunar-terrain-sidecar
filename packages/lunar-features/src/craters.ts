@@ -316,6 +316,15 @@ export function stampCrater(
   layer: TerrainLayer,
   c: CraterParameters,
   semantic?: Uint8Array,
+  /**
+   * Per-sample elevation-provenance mask and the index value meaning
+   * "measured plus synthetic". Every sample this crater changes is synthetic
+   * topography; leaving the mask unwritten let a DEM-grounded layer keep
+   * claiming `measured` for samples containing a synthesised crater —
+   * contradicting the per-sample provenance guarantee (domain review M2).
+   */
+  elevationSource?: Uint8Array,
+  measuredPlusSyntheticIdx = 0,
 ): StampResult {
   const res = layer.horizontalResolutionMeters;
   const radius = c.diameterMeters / 2;
@@ -431,6 +440,8 @@ export function stampCrater(
       touched++;
       if (dh < 0) excavated += -dh * cellArea;
       else deposited += dh * cellArea;
+
+      if (elevationSource) elevationSource[i] = measuredPlusSyntheticIdx;
 
       if (semantic) {
         // craterSemantic(c, u), inlined.

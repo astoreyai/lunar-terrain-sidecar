@@ -31,7 +31,7 @@ The single rule that keeps real and synthetic content from double-counting, appl
 
 1. **Noise stack.** For a DEM-grounded layer, procedural layers whose wavelength `1/frequency` is **not** below the DEM's effective resolution are suppressed — the measured elevations are already authoritative at those scales (`generate.ts`, `activeStack` filter; each suppression is noted). A layer that receives sub-resolution detail is promoted to `elevationProvenance: 'measured_dem_plus_synthetic_subresolution'`.
 2. **Craters.** `sampleCraterPopulation` caps the maximum synthesised diameter at `demEffectiveResolutionM` — craters at or above it are already present in the measured elevations (`craters.ts`, with an explanatory note in the output; if the cap falls at or below the minimum diameter, **no** craters are synthesised). The minimum diameter is additionally raised to 4 grid samples per layer (`generate.ts`), below which a crater cannot be represented.
-3. **Effective vs grid resolution.** `sourceEffectiveResolutionMeters` is distinct from the product's pixel size: a 5 m/px product typically resolves features only at ~15–20 m (`terrain.ts`). It defaults to 3× the grid spacing when not configured (`DemSourceSchema`, `config.ts`).
+3. **Effective vs grid resolution.** `sourceEffectiveResolutionMeters` is distinct from the product's pixel size: a 5 m/px product typically resolves features only at ~15–20 m (an operator-supplied per-product input, not a constant: the shipped 17.5 m equals 3.5x grid spacing, consistent with the products' feature-resolving scale; deriving it per site from LOLA track density / the Barker et al. 2021 error analysis would tighten it) (`terrain.ts`). It defaults to 3× the grid spacing when not configured (`DemSourceSchema`, `config.ts`).
 
 ## Crater model (literature-anchored)
 
@@ -80,7 +80,7 @@ Samples not already classified by a feature (crater floor/wall/rim, rock field) 
 
 ## Solar geometry and horizon
 
-Ephemeris mode computes real az/el from site + epoch ([ADR 0001](decisions/0001-solar-model.md)); manual mode is honoured but flagged `manual_override` in provenance with a limitation statement, and a warning fires for physically unattainable polar elevations (> 2° above |lat| 85°). The horizon is ray-marched over the **widest** layer (a 30 m patch cannot see its own skyline), with curvature *not* re-applied — layers are tangent planes ([coordinate-system.md](coordinate-system.md)).
+Ephemeris mode computes real az/el from site + epoch ([ADR 0001](decisions/0001-solar-model.md)); manual mode is honoured but flagged `manual_override` in provenance with a limitation statement, and a warning fires for physically unattainable polar elevations (> 2° above |lat| 85°). The horizon is ray-marched over the **widest** layer (note: also a far-field truncation — relief beyond the widest layer cannot shadow the site, so illumination studies need a context layer sized to the real skyline distance, tens of km at polar sites) (a 30 m patch cannot see its own skyline), with curvature *not* re-applied — layers are tangent planes ([coordinate-system.md](coordinate-system.md)).
 
 ## Static terramechanics assessment (Bekker–Wong)
 

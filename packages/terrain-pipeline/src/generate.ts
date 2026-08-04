@@ -84,6 +84,9 @@ import {
   type WireStackLayer,
 } from './workerPool.js';
 
+/** Index of 'measured_plus_synthetic' in ELEVATION_SOURCES, hoisted once. */
+const MEASURED_PLUS_SYNTHETIC_IDX = ELEVATION_SOURCES.indexOf('measured_plus_synthetic');
+
 export const GENERATOR_NAME = 'lunar-terrain-sidecar';
 export const GENERATOR_VERSION = '0.1.0';
 
@@ -436,7 +439,7 @@ async function generateTerrainImpl(
       },
       {
         id: 'pike_morphometry',
-        description: 'Simple-crater depth/diameter 0.2 and rim height 0.04 D',
+        description: 'Simple-crater depth/diameter 0.2 and rim height 0.036 D^1.014 (km)',
         citation: 'Pike (1977), in Impact and Explosion Cratering, 489-509.',
       },
       {
@@ -477,7 +480,13 @@ async function generateTerrainImpl(
       for (const n of cn) notes.push(`${layer.id}: ${n}`);
 
       for (const c of craters) {
-        stampCrater(layer, c, layer.masks.semantic);
+        stampCrater(
+          layer,
+          c,
+          layer.masks.semantic,
+          layer.elevationProvenance === 'synthetic' ? undefined : layer.masks.elevationSource,
+          MEASURED_PLUS_SYNTHETIC_IDX,
+        );
         features.push(toCraterFeature(c, [layer.id], 'production_csfd', `crater:${layer.id}`));
       }
 
@@ -501,7 +510,13 @@ async function generateTerrainImpl(
           ejectaAmplitudeMeters: a.diameterMeters * 0.01 * (1 - a.degradation),
           centralPeak: false,
         };
-        stampCrater(layer, c, layer.masks.semantic);
+        stampCrater(
+          layer,
+          c,
+          layer.masks.semantic,
+          layer.elevationProvenance === 'synthetic' ? undefined : layer.masks.elevationSource,
+          MEASURED_PLUS_SYNTHETIC_IDX,
+        );
         features.push(toCraterFeature(c, [layer.id], 'authored', 'authored'));
       }
     }

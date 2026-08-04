@@ -132,6 +132,12 @@ export function productionDensity(diameterKm: number, ageGa: number): number {
  *
  *     n(≥D) = 0.084 D⁻²
  *
+ * Source locus: Xiao & Werner (2015) report lunar crater equilibrium at a
+ * few percent of geometric saturation; 0.084·D⁻² equals 5.5% of the Trask
+ * geometric-saturation curve 1.54·D⁻², the level their study characterises
+ * for small lunar craters. The single-coefficient power law is the standard
+ * summary form of that finding.
+ *
  * Scale-free: `n` and `D` share length units, so `n·D² = 0.084` — a surface in
  * equilibrium keeps a fixed fractional coverage regardless of scale, because it
  * erases small craters as fast as it gains them.

@@ -24,7 +24,7 @@ Undo re-applies the exact inverse of the recorded operation (`INVERTIBLE_KINDS` 
 
 ## No GPU or WASM acceleration
 
-CPU generation is the reference implementation and the only implementation. Declared machine-readably in `terrain.capabilities` → `notImplemented.gpuGeneration` (`apps/headless-server/src/server.ts`) and in `apps/headless-server/src/cli.ts` (spec §20). The README's measured demonstration site (10.3 M samples) generates in ~7 s on CPU.
+CPU generation is the reference implementation and the only implementation. Declared machine-readably in `terrain.capabilities` → `notImplemented.gpuGeneration` (`apps/headless-server/src/server.ts`) and in `apps/headless-server/src/cli.ts` (spec §20). The README's measured demonstration site (10.3 M samples) generates in ~3.4 s (8 worker threads) on CPU.
 
 CPU generation is no longer single-threaded, though: the `base_relief` and `regolith_microrelief` hot loops row-band across a `node:worker_threads` pool sized min(cores − 2, 8) by default (spec §14; `packages/terrain-pipeline/src/workerPool.ts`), with byte-identical output — proven by the `reproduce` gate and `tests/parallel.test.ts` against the synchronous path, which remains the reference implementation and is selected with `GenerateOptions.workerThreads: 1` (spec §20). Layers under ~256k samples stay synchronous. Crater stamping is deliberately **not** parallelised: overlapping craters accumulate `+=` in population order, so splitting them across threads would change bits.
 
@@ -57,3 +57,14 @@ The sidecar holds exactly one session with one dataset (`Session` in `apps/headl
 - **Oversampled DEM layers interpolate.** A layer sampled finer than its source product contains interpolated, not measured, elevations between source pixels; reported per-layer in the generation notes (`generate.ts`).
 - **Protocol-version enforcement is major-version only.** Both shipped clients (browser `rpc.ts`, Godot `sidecar_client.gd`) disconnect with an error when the sidecar's announced protocol **major** version differs from theirs (`CLIENT_PROTOCOL_MAJOR`). Minor/patch drift is tolerated by design; a breaking change within the same major would not be caught. See [protocol.md](protocol.md).
 - **Cross-engine bit-reproducibility is proven only for the noise core.** Feature models and the ephemeris use transcendental functions whose rounding is engine-dependent; byte-identity is verified on a fixed platform by the `reproduce` gate. See [reproducibility.md](reproducibility.md).
+
+- **Horizon and shadow fidelity are bounded by the widest configured layer.**
+  `horizonProfile` ray-marches the widest layer and stops where rays leave its
+  grid, so terrain beyond that extent cannot contribute to the skyline. At
+  grazing polar sun this matters: a 13 m ridge at 500 m subtends the same
+  1.5 degrees as a 260 m massif at 10 km, and real south-polar skylines are
+  set by relief tens of kilometres away. The shipped example's 1 km context
+  layer is a demonstrator, not an illumination-study configuration — polar
+  illumination work needs a context layer of tens of kilometres (the LOLA
+  120 m product supports this) and should be checked against the long-range
+  horizon method of Mazarico et al. (2011, Icarus 211).

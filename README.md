@@ -83,7 +83,7 @@ runnable where `tsx` is installed; there is no compiled standalone binary.
 ## Quick start
 
 ```bash
-pnpm install
+pnpm install    # or: npm install
 
 # What will this cost before it allocates anything?
 npm run terrain -- estimate examples/south_pole_site_01/config.json
@@ -175,12 +175,18 @@ spec §26 against a live sidecar in headless Godot):
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
+tests/lunar-solar.de.test.ts          11   TS DE440 reader vs frozen JPL reference
 tests/lunar-dem.real-data.test.ts     19   real LOLA products vs GDAL
-tests/lunar-features.test.ts          46   crater/rock models, RNG, estimator
-tests/protocol.test.ts                17   real WebSocket JSON-RPC server
+tests/lunar-features.test.ts          47   crater/rock models, RNG, estimator
+tests/terramech.test.ts               19   Bekker-Wong vs hand-derived formulas
+tests/protocol.test.ts                21   real WebSocket JSON-RPC server
+tests/construction.test.ts            20   spec-11 features, volumes, mass balance
+tests/history.test.ts                 16   operation log + deterministic replay
+tests/sync.test.ts                     7   sparse deltas + snapshot/restore
+tests/parallel.test.ts                 4   worker-thread byte-identity
 tests/godot-roundtrip.test.ts         10   headless Godot collision agreement
-tests/godot-integration.test.ts        9   full §26 addon lifecycle + dock
-tests/interactive-ui.test.ts          18   real Chromium + WebGL, screenshots
+tests/godot-integration.test.ts        9   full spec-26 addon lifecycle + dock
+tests/interactive-ui.test.ts          33   real Chromium + WebGL, screenshots
 ```
 
 ## Coordinates
@@ -242,8 +248,10 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
   bilinearly. On-grid agreement is 9 µm.
 - **GPU and WASM acceleration are not implemented.** CPU generation is the
   reference implementation and the only implementation.
-- **Rock count estimates are upper bounds**, taken before slope and
-  crater-rim-density rejection, which depend on terrain not yet generated.
+- **Rock count estimates are background expectations** — rim-excess rocks are
+  added on top per crater (realised counts ran ~2.2× the background on the
+  shipped demo) and slope rejection subtracts; both depend on terrain not yet
+  generated.
 
 ## Citing
 
@@ -265,5 +273,5 @@ godot/      addon/lunar_terrain (loader, sidecar client, editor dock, plugin)
             example-project     (round-trip + integration harnesses)
 examples/   south_pole_site_01
 docs/       decisions/
-tests/      142 tests
+tests/      239 tests across 13 files
 ```

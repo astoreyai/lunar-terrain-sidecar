@@ -165,10 +165,14 @@ function golombekCountPerM2(k: number, dMin: number, dMax: number, bins = 512): 
 /**
  * Expected rock count, used only for reporting.
  *
- * This is an **upper bound on the realised count**. The generator additionally
- * rejects rocks on slopes above the configured limit and thins the population
- * away from crater rims by `craterRimEnhancement`, both of which depend on the
- * terrain that has not been generated yet.
+ * This is the **background expectation** — the calibrated Golombek population
+ * over the area. The generator ADDS rim-excess rocks on top of it
+ * ((enhancement − 1) × background density over each crater's rim annulus) and
+ * rejects rocks on slopes above the configured limit; both depend on the
+ * crater population and terrain that have not been generated yet, so the
+ * realised count can exceed this figure substantially on cratered sites
+ * (measured: ~2.2× on the shipped demo). An earlier revision mislabelled this
+ * an "upper bound", which the demo itself falsified.
  */
 function estimateRockCount(config: TerrainConfig, areaM2: number): number {
   if (!config.rocks.enabled) return 0;
@@ -355,7 +359,7 @@ export function formatEstimate(est: TerrainEstimate): string {
   lines.push(`estimated export   ${(est.estimatedExportBytes / 1e6).toFixed(1)} MB`);
   lines.push(`tiles              ${est.totalTiles}`);
   lines.push(`craters (expected) ${est.estimatedCraters.toLocaleString()}`);
-  lines.push(`rocks (upper bound) ${est.estimatedRockInstances.toLocaleString()}  (before slope and rim-density rejection)`);
+  lines.push(`rocks (background)  ${est.estimatedRockInstances.toLocaleString()}  (rim excess and slope rejection depend on the generated terrain)`);
   lines.push(`profile            ${est.profile} (hard ceiling ${(est.limitBytes / 1e6).toFixed(0)} MB)`);
   if (est.warnings.length) {
     lines.push('');

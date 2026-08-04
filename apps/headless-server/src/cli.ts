@@ -239,6 +239,48 @@ async function cmdSolar(argv: string[]): Promise<void> {
   }
 }
 
+/**
+ * Measure the analytic Meeus/IAU solar chain against the JPL DE440 kernels
+ * over a monthly sweep — the reproducible source of the paper's headline
+ * ephemeris-accuracy figure. Requires the kernels (scripts/fetch-data.sh or
+ * LTS_SPICE_DIR); fails with a structured error when they are absent rather
+ * than printing anything synthetic.
+ */
+async function cmdDeCompare(argv: string[]): Promise<void> {
+  const { compareWithAnalytic, loadDeKernels } = await import('@lts/lunar-solar');
+  const fromIdx = argv.indexOf('--from');
+  const monthsIdx = argv.indexOf('--months');
+  const from = parseInstant(fromIdx >= 0 ? argv[fromIdx + 1] : '2020-01-01T00:00:00Z');
+  const months = monthsIdx >= 0 ? Number(argv[monthsIdx + 1]) : 360;
+  if (!Number.isFinite(months) || months < 1) {
+    console.error('--months must be a positive number');
+    process.exit(2);
+  }
+
+  const kernels = loadDeKernels(); // throws a structured SPICE error if absent
+
+  let sum = 0;
+  let max = -Infinity;
+  let maxAt = '';
+  const AVG_MONTH_MS = 30.436875 * 86400_000; // mean Gregorian month
+  for (let i = 0; i < months; i++) {
+    const t = new Date(from.getTime() + i * AVG_MONTH_MS);
+    const c = compareWithAnalytic(t, kernels);
+    sum += c.separationDeg;
+    if (c.separationDeg > max) {
+      max = c.separationDeg;
+      maxAt = t.toISOString();
+    }
+  }
+
+  const to = new Date(from.getTime() + (months - 1) * AVG_MONTH_MS);
+  console.log(`Meeus/IAU vs JPL DE440 sub-solar separation`);
+  console.log(`epochs      ${months} monthly, ${from.toISOString().slice(0, 10)} .. ${to.toISOString().slice(0, 10)}`);
+  console.log(`mean        ${(sum / months).toFixed(4)}°`);
+  console.log(`max         ${max.toFixed(4)}°  at ${maxAt}`);
+  console.log(`kernels     ${kernels.directory}`);
+}
+
 async function cmdServe(argv: string[]): Promise<void> {
   const portIdx = argv.indexOf('--port');
   const port = portIdx >= 0 ? Number(argv[portIdx + 1]) : 8765;
@@ -265,6 +307,9 @@ async function main(): Promise<void> {
       case 'solar':
         await cmdSolar(argv);
         break;
+      case 'de-compare':
+        await cmdDeCompare(argv);
+        break;
       case 'serve':
         await cmdServe(argv);
         break;
@@ -277,6 +322,7 @@ usage:
   lunar-terrain validate  <generated-dir>
   lunar-terrain reproduce <config.json>
   lunar-terrain solar     <latDeg> <lonDeg> [isoUtc] [--sweep <days>]
+  lunar-terrain de-compare [--from 2020-01-01] [--months 360]   (needs DE440 kernels)
   lunar-terrain serve     [--port 8765]
 
 coordinates: right-handed, Y-up, +X east, +Z south (north = -Z). metres throughout.`);
