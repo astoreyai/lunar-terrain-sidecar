@@ -133,7 +133,7 @@ the terrain tool.
 
 # Validation and reproducibility
 
-The test suite (239 tests across 13 files at v0.1.0) validates against
+The test suite (242 tests across 14 files at v0.1.0) validates against
 authorities outside the code wherever one exists.
 
 **Ephemeris versus physical invariants.** The analytic solar chain is tested
