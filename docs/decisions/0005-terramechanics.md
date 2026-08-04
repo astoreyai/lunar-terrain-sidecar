@@ -114,3 +114,13 @@ removing it would break the shipped clients for no gain.
   visible in every default response rather than hidden behind a switch.
 - Citations: bekker1969, wong2008, janosi1961, ishigami2007, mitchell1972,
   li2022terramechanics (`paper/paper.bib`).
+
+## Addendum (closing audit, 2026-08-03)
+
+The paper's parenthetical on Bekker's fuller wheel derivation is sourced
+here: repeating the shipped solve with the wheel form
+`z = (3W/((3−n)·b·√D·k))^(2/(2n+1))` gives static sinkage **17.61 mm**
+(vs 13.44 mm flat-plate) and lowers the slope margin by **2.27°**
+(32.62° → 30.35°). The flat-plate simplification is therefore
+non-conservative for sinkage and conservative for margin — stated in the
+paper accordingly.

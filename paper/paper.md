@@ -142,7 +142,7 @@ against nine independent properties of the Earth–Moon–Sun system
 
 | Invariant | Source of truth | Result |
 |---|---|---|
-| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.57° |
+| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.59° |
 | Sub-solar latitude period ≈ 346.6 d | draconic year | passes |
 | Sub-solar longitude period 29.5306 d, westward | synodic month, prograde rotation | passes |
 | Solar elevation at −90° = −(sub-solar latitude) | geometric identity | agrees to 10⁻⁹ ° |
