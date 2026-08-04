@@ -171,7 +171,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 239 tests, 13 files, all passing.
+**Test suite**: 242 tests, 14 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
@@ -184,6 +184,7 @@ tests/construction.test.ts            20   spec-11 features, volumes, mass balan
 tests/history.test.ts                 16   operation log + deterministic replay
 tests/sync.test.ts                     7   sparse deltas + snapshot/restore
 tests/parallel.test.ts                 4   worker-thread byte-identity
+tests/provenance.test.ts               3   per-sample provenance-mask guarantees
 tests/godot-roundtrip.test.ts         10   headless Godot collision agreement
 tests/godot-integration.test.ts        9   full spec-26 addon lifecycle + dock
 tests/interactive-ui.test.ts          33   real Chromium + WebGL, screenshots
@@ -227,7 +228,7 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
   TypeScript reader for the real JPL DE440 kernels (SPK + binary PCK lunar
   orientation, on-disk at `/mnt/projects/datasets/spice_kernels`) provides an
   `ephemeris_de` mode and measures the default Meeus/IAU chain against JPL's
-  integrated truth: **max 0.0118° sub-solar separation over 2020–2049** — the
+  integrated truth: **max 0.0111° sub-solar separation over 2020–2049** (reproducible: `npm run terrain -- de-compare --months 360`; a denser dev-time sweep measured 0.0118°) — the
   literature's 0.01–0.03° budget holds at its favourable end. The default mode
   stays analytic to preserve byte-reproducibility of existing sites; see
   docs/decisions/0004-de440-kernels.md.
@@ -273,5 +274,5 @@ godot/      addon/lunar_terrain (loader, sidecar client, editor dock, plugin)
             example-project     (round-trip + integration harnesses)
 examples/   south_pole_site_01
 docs/       decisions/
-tests/      239 tests across 13 files
+tests/      242 tests across 14 files
 ```

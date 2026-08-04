@@ -41,10 +41,10 @@ Pike/Stopar morphometry [@pike1977; @stopar2017], McGetchin ejecta
 [@mcgetchin1973], and the Golombek rock SFD [@golombek1997; @golombek2003]
 — a form calibrated on Mars and Earth-analog sites (lunar anchoring via
 Surveyor-era counts); areal coverage is a user parameter, and
-Diviner-measured polar rock abundance is typically lower than the
-demonstration value [@bandfield2011]. Solar elevation
-and azimuth are never free parameters (a debugging override exists, flagged
-non-physical in provenance): they are computed from a real ephemeris — a Meeus/IAU analytic chain [@meeus1998; @archinal2011;
+Diviner-measured rock abundance across its mapped
+latitudes is typically lower than the demonstration value [@bandfield2011]. Solar elevation
+and azimuth are never free parameters (a debugging override exists, recorded as
+`manual_override` in provenance with a stated limitation): they are computed from a real ephemeris — a Meeus/IAU analytic chain [@meeus1998; @archinal2011;
 @archinal2011erratum] by default, or JPL DE440 kernels [@park2021] read by a
 dependency-free TypeScript SPICE-subset reader. Generation is deterministic:
 regenerating the shipped demonstration site from its configuration and seed
@@ -118,9 +118,10 @@ modeling-and-simulation values [@li2022terramechanics], asserted by test to
 sit inside the Apollo in-situ ranges of Mitchell et al. [@mitchell1972]. For
 a 450 kg VIPER-class reference rover (four 0.20 m × 0.25 m wheels, 1.62
 m/s²) the model gives ≈13 mm static sinkage, ≈460 N flat-ground drawbar
-pull, and a ≈33° slope margin — a static upper bound (full-slip thrust,
-flat-plate contact; Bekker's fuller wheel derivation lowers it by ~2°);
-operational planners cap lunar traverses well below such margins. This replaced a hand-weighted heuristic,
+pull, and a ≈33° slope margin — the thrust, drawbar-pull and
+slope-margin figures are static upper bounds (full-slip thrust; Bekker's
+fuller wheel derivation lowers the margin by ~2° and *raises* sinkage to
+≈18 mm); operational planners cap lunar traverses well below such margins. This replaced a hand-weighted heuristic,
 which remains available and labeled. Two boundaries are stated explicitly: a
 provenance block travels with every response recording that the parameters
 are equatorial-Apollo/simulant-derived — no polar site has in-situ soil

@@ -592,6 +592,21 @@ async function generateTerrainImpl(
         regolithDoneRows += layer.heightSamples;
         emitRegolithProgress();
       }
+
+      // Provenance: microrelief is synthesis applied to EVERY sample of this
+      // layer (both the worker and synchronous paths accumulate
+      // unconditionally), so on a DEM-grounded layer the whole
+      // elevation-source mask becomes measured_plus_synthetic and the layer
+      // enum is promoted. A wholesale fill after the stage covers both code
+      // paths identically — the round-1 referee fix for this attempted a
+      // per-sample write inside a loop the worker refactor had replaced, and
+      // silently patched nothing (caught by the round-2 domain review).
+      if (layer.elevationProvenance !== 'synthetic') {
+        layer.masks.elevationSource?.fill(MEASURED_PLUS_SYNTHETIC_IDX);
+        if (layer.elevationProvenance === 'measured_dem') {
+          layer.elevationProvenance = 'measured_dem_plus_synthetic_subresolution';
+        }
+      }
     }
     syntheticHeuristics.push(
       'Regolith microrelief below the source DEM resolution is procedurally synthesised. ' +

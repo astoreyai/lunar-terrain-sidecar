@@ -8,6 +8,7 @@ license: MIT
 authors:
   - family-names: Storey
     given-names: Aaron
+    orcid: "https://orcid.org/0009-0009-5560-0015"
     email: storeyaw@clarkson.edu
     affiliation: "Clarkson University"
 repository-code: "https://github.com/astoreyai/lunar-terrain-sidecar"

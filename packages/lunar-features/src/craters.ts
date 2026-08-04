@@ -10,6 +10,7 @@
 
 import { Rng } from '@lts/terrain-core';
 import {
+  ELEVATION_SOURCES,
   SEMANTIC_CLASSES,
   type CraterFeature,
   type CraterParameters,
@@ -324,7 +325,10 @@ export function stampCrater(
    * contradicting the per-sample provenance guarantee (domain review M2).
    */
   elevationSource?: Uint8Array,
-  measuredPlusSyntheticIdx = 0,
+  // Defaulted from the shared enum, NOT 0: index 0 is 'synthetic', so the old
+  // default silently mislabelled crater samples on a measured layer when a
+  // caller passed the mask without the index (round-2 domain review, NOTE-D).
+  measuredPlusSyntheticIdx: number = ELEVATION_SOURCES.indexOf('measured_plus_synthetic'),
 ): StampResult {
   const res = layer.horizontalResolutionMeters;
   const radius = c.diameterMeters / 2;
