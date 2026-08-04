@@ -12,6 +12,7 @@ export default defineConfig({
       '@lts/terrain-core': pkg('terrain-core'),
       '@lts/terrain-pipeline': pkg('terrain-pipeline'),
       '@lts/lunar-solar': pkg('lunar-solar'),
+      '@lts/lunar-terramech': pkg('lunar-terramech'),
       '@lts/lunar-dem': pkg('lunar-dem'),
       '@lts/lunar-features': pkg('lunar-features'),
       '@lts/terrain-export': pkg('terrain-export'),

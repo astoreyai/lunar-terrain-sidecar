@@ -177,12 +177,22 @@ describe('sidecar protocol', () => {
     expect(typeof s.semanticClass).toBe('string');
   });
 
-  it('labels traversability as a synthetic heuristic', async () => {
+  it('labels traversability models honestly on both paths', async () => {
+    // The default model is now the static Bekker–Wong assessment (ADR 0005):
+    // the response carries the parameter provenance block, and the legacy
+    // heuristic rides along — still labelled as a heuristic.
     const t = (await rpc('terrain.getTraversability', { x: 0, z: 0 })).result;
-    expect(t.traversability.score).toBeGreaterThanOrEqual(0);
-    expect(t.traversability.score).toBeLessThanOrEqual(1);
-    // Spec §22/§33: heuristics must be marked as heuristics.
-    expect(t.traversability.provenance).toMatch(/synthetic heuristic/i);
+    expect(t.traversability.model).toBe('bekker');
+    expect(t.traversability.parameters.provenance.accuracy).toMatch(/NOT claiming force-accuracy/);
+    expect(t.traversability.heuristic.provenance).toMatch(/synthetic heuristic/i);
+
+    // model:'heuristic' still returns the legacy shape, labelled (spec §22/§33:
+    // heuristics must be marked as heuristics).
+    const legacy = (await rpc('terrain.getTraversability', { x: 0, z: 0, model: 'heuristic' }))
+      .result;
+    expect(legacy.traversability.score).toBeGreaterThanOrEqual(0);
+    expect(legacy.traversability.score).toBeLessThanOrEqual(1);
+    expect(legacy.traversability.provenance).toMatch(/synthetic heuristic/i);
   });
 
   it('returns solar geometry consistent with a polar site', async () => {

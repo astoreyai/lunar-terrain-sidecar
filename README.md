@@ -171,7 +171,7 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 220 tests, 12 files, all passing.
+**Test suite**: 239 tests, 13 files, all passing.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
@@ -204,8 +204,13 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 
 - **Centimetre microrelief.** No measurement constrains lunar roughness at
   centimetre scale at these sites. Plausible texture, not observed topography.
-- **Traversability, slope and roughness classes.** Hand-weighted heuristics. No
-  terramechanics model is connected; they are not wheel-slip predictions.
+- **Traversability** now defaults to a static Bekker–Wong assessment (sinkage,
+  drawbar-pull slope margin) with parameters from the NASA LTV terramechanics
+  white paper (NTRS 20220010732), cross-checked against Mitchell et al. (1972)
+  Apollo in-situ ranges. Still labeled: parameters are equatorial/simulant-
+  derived — no polar site has in-situ measurements — and the model is static
+  assessment, not force-accurate dynamics (docs/decisions/0005-terramechanics.md).
+  The original hand-weighted heuristic remains available and labeled.
 - **Sub-DEM crater and boulder populations.** Statistically anchored to
   published size-frequency distributions, but individual features are sampled,
   not observed.

@@ -82,12 +82,22 @@ Samples not already classified by a feature (crater floor/wall/rim, rock field) 
 
 Ephemeris mode computes real az/el from site + epoch ([ADR 0001](decisions/0001-solar-model.md)); manual mode is honoured but flagged `manual_override` in provenance with a limitation statement, and a warning fires for physically unattainable polar elevations (> 2° above |lat| 85°). The horizon is ray-marched over the **widest** layer (a 30 m patch cannot see its own skyline), with curvature *not* re-applied — layers are tangent planes ([coordinate-system.md](coordinate-system.md)).
 
+## Static terramechanics assessment (Bekker–Wong)
+
+`terrain.getTraversability` defaults to a model-based static assessment (`packages/lunar-terramech`, [ADR 0005](decisions/0005-terramechanics.md)) in place of the hand-weighted heuristic, which remains available as `model: 'heuristic'` and rides inside every default response for comparison.
+
+Per queried point, from the finest covering layer's own local slope: Bekker equilibrium sinkage `z = (p / (k_c/b + k_φ))^(1/n)` under Wong's flat-plate contact simplification, compaction resistance `R_c = b·k·z^(n+1)/(n+1)`, Mohr–Coulomb maximum thrust `H = A·c + W·tan(φ)`, gradient resistance `m·g·sin(θ)`, net drawbar pull `DP(θ) = H − R_c − R_g`, and the slope margin where DP reaches zero — **32.6°** for the sourced parameters and the reference vehicle (450 kg VIPER-class, 4 wheels, b = 0.20 m, r = 0.25 m). Classes: `go` (DP > 20 % of thrust), `marginal`, `no-go` (DP ≤ 0 or sinkage > half the wheel radius).
+
+Citations exactly as recorded in `parameters.ts` and the provenance block: Bekker (1969), *Introduction to Terrain-Vehicle Systems*; Wong (2008), *Theory of Ground Vehicles*; Janosi & Hanamoto (1961) — shear law whose full-slip asymptote the static thrust is; Ishigami et al. (2007), *J. Field Robotics* 24(3) — the drawbar decomposition for planetary rovers; Mitchell et al. (1972), Proc. Third Lunar Sci. Conf. — Apollo in-situ ranges the point values are asserted against in tests; NASA LTV terramechanics white paper, NTRS 20220010732 — the parameter set (k_c = 1400, k_φ = 820 000, n = 1.0, c = 170 Pa, φ = 35°).
+
+**Static only** (spec §33, [ADR 0003](decisions/0003-ui-and-dock-are-protocol-clients.md), [ADR 0005](decisions/0005-terramechanics.md)): no slip time-histories, no deformable contact, no dynamic wheel–soil simulation — the physics authority owns dynamics. And **not validated**: parameters are equatorial-Apollo/simulant-derived, no polar site has in-situ measurements, and every response carries that provenance block.
+
 ## What is synthetic, and labelled as such
 
 Emitted verbatim into `provenance.syntheticHeuristics` / `limitations` of every export (`generate.ts`, `server.ts`):
 
 - **Centimetre microrelief** — no measurement constrains lunar roughness at centimetre scale at these sites; plausible texture, not observed topography.
-- **Traversability / slope / roughness classes** — hand-weighted heuristics (`traversabilityAt` in `server.ts` carries the label in every response); no terramechanics model is connected.
+- **Traversability / slope / roughness classes** — the pipeline's semantic classification and the UI overlay remain hand-weighted heuristics (`traversabilityAt` in `server.ts` carries the label in every response where it is used). The RPC's default is now the static Bekker–Wong assessment above — a sourced model, but an **unvalidated extrapolation at polar sites**, and its provenance block says so; the heuristic result is embedded in every bekker response, still labelled.
 - **Sub-DEM crater and boulder populations** — statistically anchored to the published SFDs above, but individual features are sampled, not observed.
 - **Fully synthetic sites** (no DEM configured) carry the limitation "all elevations in this dataset are procedurally synthesised".
 

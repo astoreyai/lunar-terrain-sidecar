@@ -47,6 +47,12 @@ import {
 } from '@lts/terrain-protocol';
 import { buildLocalFrame, localToProjected, inverse } from '@lts/lunar-dem';
 import {
+  LUNAR_REGOLITH_PARAMETERS,
+  REFERENCE_VEHICLE,
+  TERRAMECHANICS_PROVENANCE,
+  assessAt,
+} from '@lts/lunar-terramech';
+import {
   horizonProfile,
   samplerFromArray,
   solarPositionAtSite,
@@ -1255,10 +1261,57 @@ async function handle(
       }
 
       case 'terrain.getTraversability': {
+        // Two models behind ONE method (params only — the method table is
+        // unchanged, spec §16):
+        //
+        // - 'bekker' (default): static Bekker–Wong assessment with sourced
+        //   parameters (ADR 0005). The legacy heuristic result is embedded
+        //   under `heuristic` for comparison, still carrying its own label.
+        // - 'heuristic': the legacy hand-weighted score, response shape
+        //   byte-for-byte what it was before the model parameter existed —
+        //   existing clients (the UI inspector) read that shape.
         const dataset = requireDataset();
         const x = num(p, 'x');
         const z = num(p, 'z');
-        return ok(req.id, { x, z, traversability: traversabilityAt(dataset, x, z) });
+        const model = p.model === undefined ? 'bekker' : String(p.model);
+        if (model !== 'bekker' && model !== 'heuristic') {
+          throw new TerrainError(
+            ERROR_CODES.INVALID_CONFIG,
+            `parameter 'model' must be 'bekker' or 'heuristic', got ${JSON.stringify(p.model)}`,
+          );
+        }
+        if (model === 'heuristic') {
+          return ok(req.id, { x, z, traversability: traversabilityAt(dataset, x, z) });
+        }
+        const layer = finestLayerAt(dataset, x, z);
+        const assessment = layer ? assessAt(layer, x, z) : null;
+        if (!assessment) {
+          return ok(req.id, { x, z, traversability: null });
+        }
+        return ok(req.id, {
+          x,
+          z,
+          traversability: {
+            model: 'bekker',
+            slopeDeg: assessment.slopeDeg,
+            sinkageM: assessment.sinkageM,
+            drawbarPullN: assessment.drawbarPullN,
+            thrustN: assessment.thrustN,
+            slopeMarginDeg: assessment.slopeMarginDeg,
+            class: assessment.class,
+            parameters: {
+              ...LUNAR_REGOLITH_PARAMETERS,
+              vehicle: { ...REFERENCE_VEHICLE },
+              // The provenance block travels with EVERY response using this
+              // model: equatorial-Apollo/simulant-derived parameters, no
+              // polar in-situ data, unsettled low-gravity effects (ADR 0005).
+              provenance: TERRAMECHANICS_PROVENANCE,
+            },
+            // The legacy result, for comparison — still labelled as the
+            // synthetic heuristic it is.
+            heuristic: traversabilityAt(dataset, x, z),
+          },
+        });
       }
 
       case 'terrain.getSolar': {

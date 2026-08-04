@@ -954,10 +954,18 @@ async function queryPointAuthoritative(x: number, z: number): Promise<void> {
     const [h, sem, trav] = await Promise.all([
       client.call<{ elevationM: number; layerId: string | null }>('terrain.getHeight', { x, z }),
       client.call<{ semanticClass: string | null }>('terrain.getSemanticClass', { x, z }),
-      client.call<{ traversability: { score: number; slopeDeg: number } | null }>(
-        'terrain.getTraversability',
-        { x, z },
-      ),
+      client.call<{
+        traversability: {
+          // Bekker default shape (iteration 10) with the labeled heuristic
+          // embedded; model:'heuristic' still returns the legacy score shape.
+          model?: string;
+          class?: string;
+          slopeDeg: number;
+          slopeMarginDeg?: number;
+          score?: number;
+          heuristic?: { score: number };
+        } | null;
+      }>('terrain.getTraversability', { x, z }),
     ]);
     if (Number.isFinite(h.elevationM)) {
       setStatus('insp-elevation', `${h.elevationM.toFixed(4)} m`);
@@ -965,8 +973,19 @@ async function queryPointAuthoritative(x: number, z: number): Promise<void> {
     }
     setStatus('insp-semantic', sem.semanticClass ?? '—');
     if (trav.traversability) {
-      setStatus('insp-slope', `${trav.traversability.slopeDeg.toFixed(2)}°`);
-      setStatus('insp-trav', trav.traversability.score.toFixed(3));
+      const t = trav.traversability;
+      setStatus('insp-slope', `${t.slopeDeg.toFixed(2)}°`);
+      // Prefer the Bekker classification (model-based, sourced parameters);
+      // fall back to whichever score shape is present.
+      if (t.model === 'bekker' && t.class) {
+        setStatus(
+          'insp-trav',
+          `${t.class} (margin ${t.slopeMarginDeg?.toFixed(1) ?? '—'}°)`,
+        );
+      } else {
+        const score = t.score ?? t.heuristic?.score;
+        setStatus('insp-trav', score !== undefined ? score.toFixed(3) : '—');
+      }
     }
   } catch {
     // A dropped query is not worth surfacing; the preview values still show.

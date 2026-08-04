@@ -25,6 +25,7 @@
       "@lts/terrain-core": ["packages/terrain-core/src/index.ts"],
       "@lts/terrain-pipeline": ["packages/terrain-pipeline/src/index.ts"],
       "@lts/lunar-solar": ["packages/lunar-solar/src/index.ts"],
+      "@lts/lunar-terramech": ["packages/lunar-terramech/src/index.ts"],
       "@lts/lunar-dem": ["packages/lunar-dem/src/index.ts"],
       "@lts/lunar-features": ["packages/lunar-features/src/index.ts"],
       "@lts/terrain-export": ["packages/terrain-export/src/index.ts"],
