@@ -1,10 +1,13 @@
 # lunar-terrain-sidecar — agent handoff
 
-**State at handoff (2026-08-03, tag `v0.1.0`, HEAD `caa4a8f`):** feature-complete
-against its 34-section engineering spec, JOSS-submission-ready, 242/242 tests
-across 14 files, typecheck clean, demo site reproduces 183/183 artifacts
-byte-for-byte. 17 commits on `master`, **no remote** (creating
-`github.com/astoreyai/lunar-terrain-sidecar` is Aaron's pending action).
+**State (2026-08-04, tag `v0.1.1`):** feature-complete against its 34-section
+engineering spec, JOSS-submission-ready, 244/244 tests across 14 files,
+typecheck clean, demo site reproduces 183/183 artifacts byte-for-byte.
+**No remote** (creating `github.com/astoreyai/lunar-terrain-sidecar` is
+Aaron's pending action; push master + both tags). Since v0.1.0: paper figure
+(`paper/figures/solar-sweep.png`), README media set (`docs/media/`, regenerate
+via `scripts/capture-media.ts` + `scripts/assemble-media.sh`), UI connect-time
+dataset auto-load, and a polar-night viewport banner.
 
 Full session history: `/mnt/projects/session_notes/2026-08-03_lunarlandscape_build_and_joss_paper.md`.
 
