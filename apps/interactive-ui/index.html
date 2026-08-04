@@ -265,6 +265,15 @@
             hidden
             style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#ffbf00;color:#1a1206;font-weight:600;font-size:12px;padding:6px 14px;border-radius:4px;z-index:20;pointer-events:none;white-space:nowrap;"
           >GPU PREVIEW — approximate, not the authoritative terrain; Generate to commit</div>
+          <!-- Polar night is a real, common state at this site: the Sun spends
+               much of each month below the horizon, and the lit view has a
+               single solar source with no sky light. Say so rather than
+               presenting a black frame as a rendering failure. -->
+          <div
+            id="night-banner"
+            hidden
+            style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#2b3a55;color:#cfe0ff;font-weight:600;font-size:12px;padding:6px 14px;border-radius:4px;z-index:20;pointer-events:none;white-space:nowrap;"
+          >SUN BELOW HORIZON at this epoch — the lit view is dark. Try epoch 2026-01-10T00:00:00Z + Recompute, another overlay, or Earthshine.</div>
           <div id="progress-overlay" hidden>
             <div class="bar"><div id="progress-fill"></div></div>
             <span id="progress-stage">—</span>

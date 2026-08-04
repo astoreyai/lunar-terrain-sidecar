@@ -287,6 +287,28 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     expect(Math.abs(subsolar)).toBeLessThan(1.6);
   });
 
+  it('labels polar night instead of presenting a black lit view', async () => {
+    // 2026-08-03 puts the Sun at -0.46 deg here: the lit render is honestly
+    // black, and the viewport must say so rather than look broken.
+    await page.fill('#cfg-epoch', '2026-08-03T00:00:00Z');
+    await page.click('#btn-solar');
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      if (await isVisible(page, '#night-banner')) break;
+      await page.waitForTimeout(200);
+    }
+    expect(await isVisible(page, '#night-banner')).toBe(true);
+    expect(await textOf(page, '#solar-shadow')).toContain('sun below horizon');
+
+    // Back in daylight the banner must clear (later pixel checks depend on
+    // this restore, so its correctness is load-bearing for the suite too).
+    await page.fill('#cfg-epoch', LIT_EPOCH);
+    await page.click('#btn-solar');
+    await waitForText(page, '#solar-elevation', '0.8', 20_000);
+    await page.waitForTimeout(300);
+    expect(await isVisible(page, '#night-banner')).toBe(false);
+  });
+
   it('switches analysis overlays and changes what is drawn', async () => {
     const shots: Record<string, number> = {};
     for (const overlay of ['elevation', 'slope', 'traversability', 'semantic']) {
@@ -664,6 +686,22 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
       expect(webgpuUsable).toBe(false);
     }
   });
+
+  it('auto-loads the sidecar dataset on connect after a page reload', async () => {
+    // The sidecar session outlives the page. A fresh page connecting to a
+    // sidecar that already holds terrain must render it without a Generate
+    // click — the first-run experience this suite previously never exercised.
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+    await page.fill('#sidecar-url', `ws://127.0.0.1:${SIDECAR_PORT}`);
+    await page.click('#btn-connect');
+    await waitForText(page, '#insp-terrain', 'ui_roundtrip', 30_000);
+    expect(await textOf(page, '#status-job')).toBe('loaded from sidecar');
+    expect(Number((await textOf(page, '#insp-layers')))).toBeGreaterThan(0);
+    // The reloaded page's epoch field is back at its dark default, so the
+    // auto-load must ALSO have re-derived the night state honestly.
+    expect(await isVisible(page, '#night-banner')).toBe(true);
+  }, 120_000);
 });
 
 /**
