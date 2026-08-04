@@ -57,7 +57,8 @@ from `godot/example-project` with the addon copied into `addons/`).
 
 - **Test ports are a global registry**: 8791 protocol, 8793 UI-sidecar, 8795
   godot-integration, 8801 construction, 8803 history, 8805 sync, 8807 DE,
-  8809 terramech. 8796–8799 are held by unrelated system services. A new
+  8809 terramech, 8814+5201 media capture (`scripts/capture-media.ts`).
+  8796–8799 **and 8811** are held by unrelated system services. A new
   suite needs a NEW port — a collision is green in isolation, red only in
   parallel runs.
 - **Never run two UI suites concurrently** (Vite 5199 + sidecar 8793 clash;

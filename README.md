@@ -7,6 +7,8 @@ ephemeris.
 It is not the physics engine. It produces terrain; Godot remains the simulation
 authority.
 
+![The shipped demonstration site (real PGDA Site01 DEM, 89.46°S) in the authoring UI's lit view — solar elevation 1.46°, azimuth 60.8°, computed by the ephemeris for 2026-01-10T00:00:00Z](docs/media/hero-lit.png)
+
 ```
 Godot Simulation
       │  WebSocket / JSON-RPC 2.0  (ws://127.0.0.1:8765)
@@ -33,6 +35,8 @@ length goes as `1/tan(elevation)`, so a 1 m rock throws a **38 m** shadow and a
 crater rim shadows its floor permanently. Illumination there is a property of
 *topography and date*, not a lighting preference — so elevation and azimuth are
 computed from a real ephemeris, never set independently.
+
+![One month at the demonstration site: 30 ephemeris epochs from 2025-12-20 to 2026-01-19. Elevation stays between 0.82° and 1.90° while azimuth sweeps the full compass — same terrain, shadows set entirely by the date](docs/media/solar-sweep.gif)
 
 ```
 $ npm run terrain -- solar -89.4631639 -137.4895528 2026-08-03T00:00:00Z
@@ -101,8 +105,27 @@ npm run terrain -- reproduce examples/south_pole_site_01/config.json
 npm run serve
 
 # Interactive authoring UI (needs the sidecar running)
-npm run ui          # then open http://127.0.0.1:5173
+npm run ui          # then open http://localhost:5173
 ```
+
+Connecting the UI to a sidecar that already holds terrain renders it
+immediately — no Generate needed. If the lit view is black, read the banner:
+the Sun really is below the horizon at that epoch (it spends much of each
+month there), and the viewport says so rather than looking broken.
+
+## What it looks like
+
+All images are real renders of real data — headless Chromium over the live
+sidecar, terrain from the real LOLA Site01 DEM, lighting from the ephemeris.
+Provenance and regeneration commands: [`docs/media/README.md`](docs/media/README.md).
+
+![The four analysis overlays over the demonstration site: elevation, slope, semantic classes, and the labelled traversability heuristic](docs/media/overlays.png)
+
+![Top-down elevation view showing the three nested layers — 1 km context at 2 m, 200 m mission at 0.2 m, 30 m operational at 1 cm](docs/media/topdown-elevation.png)
+
+![Construction sequence on the 200 m rover test pad: pad, ramp, repose-clamped spoil pile, mass-conserving excavation, wheel tracks, polygonal cut — every edit a checksummed, replayable delta](docs/media/construction.gif)
+
+![The authoring UI: viewport with legend, inspector with authoritative point queries, provenance panel, solar geometry from the ephemeris](docs/media/authoring-ui.png)
 
 ## Godot editor addon
 

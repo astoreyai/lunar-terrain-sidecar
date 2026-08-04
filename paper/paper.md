@@ -61,6 +61,16 @@ function of *topography and date*: a "sun angle slider" cannot produce
 physically consistent elevation/azimuth pairs. Polar rover simulation needs
 measured topography of the actual site, statistically defensible
 sub-resolution detail, and illumination locked to an ephemeris — at once.
+\autoref{fig:sweep} shows the consequence on the shipped demonstration site:
+across one lunar day the Sun's azimuth sweeps the full compass while its
+elevation never leaves the 0.8°–1.9° band, so the same terrain presents
+entirely different shadow fields depending only on the date.
+
+![The demonstration site (real PGDA Site01 DEM, 89.46°S) rendered by the
+authoring UI at four ephemeris epochs between 2025-12-22 and 2026-01-13.
+Solar elevation stays between 0.88° and 1.68° while azimuth rotates from
+290° through 201° and 111° to 22°; shadow direction and length follow the
+epoch, never a manual light setting.\label{fig:sweep}](figures/solar-sweep.png)
 
 Parts of this exist in open tools — OmniLRS [@richard2024omnilrs], notably,
 imports LRO-derived DEMs and positions the Sun from ephemerides (see
