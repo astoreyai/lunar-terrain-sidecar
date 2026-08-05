@@ -45,7 +45,14 @@ import {
   type TerrainDelta,
   type TerrainOperation,
 } from '@lts/terrain-protocol';
-import { buildLocalFrame, localToProjected, inverse } from '@lts/lunar-dem';
+import {
+  buildLocalFrame,
+  localToProjected,
+  inverse,
+  openPdsRaster,
+  farFieldHorizon,
+  type DemRaster,
+} from '@lts/lunar-dem';
 import {
   LUNAR_REGOLITH_PARAMETERS,
   REFERENCE_VEHICLE,
@@ -55,6 +62,8 @@ import {
 import {
   horizonProfile,
   samplerFromArray,
+  sampleBilinear,
+  LUNAR_REFERENCE_RADIUS_M,
   solarPositionAtSite,
   solarPositionAtSiteDE,
   loadDeKernels,
@@ -101,6 +110,32 @@ let jobCounter = 0;
 let runningJobId: string | null = null;
 /** Bound on remembered job records; oldest finished jobs are pruned. */
 const MAX_JOB_RECORDS = 64;
+
+/**
+ * Where the LOLA LDEM_75S label lives when the caller does not say (ADR 0006).
+ * Checked in order; `scripts/fetch-data.sh` populates the first, and the
+ * second is this machine's pre-existing read-only reference copy.
+ */
+const LDEM_75S_CANDIDATES = [
+  '/mnt/projects/datasets/lola_ldem/ldem_75s_120m.lbl',
+  '/mnt/projects/stewie/data/gis/raw/ldem_75s_120m.lbl',
+];
+const DEFAULT_LDEM_75S_LABEL =
+  LDEM_75S_CANDIDATES.find((p) => existsSync(p)) ?? LDEM_75S_CANDIDATES[0];
+
+/**
+ * One raster handle per label path. The handle holds the parsed label only —
+ * elevation windows are read per call — so this caches label parsing, not
+ * 116 MB of pixels.
+ */
+const farFieldRasters = new Map<string, DemRaster>();
+function openFarFieldRaster(labelPath: string): DemRaster {
+  const cached = farFieldRasters.get(labelPath);
+  if (cached) return cached;
+  const raster = openPdsRaster(labelPath);
+  farFieldRasters.set(labelPath, raster);
+  return raster;
+}
 
 /**
  * Exactly the operation kinds `applyOperation` implements. Declared once so
@@ -1408,6 +1443,109 @@ async function handle(
             ? (num(p, 'z') - widest.bounds.minZ) / widest.horizontalResolutionMeters
             : (widest.heightSamples - 1) / 2;
         const profile = horizonProfile(sampler, cx, cz, { azimuthBins: bins });
+
+        // Opt-in far-field ring (ADR 0006): merge the skyline the configured
+        // layers cannot see, ray-marched from the real LDEM_75S product along
+        // great circles. Off by default — the near-field-only response is the
+        // documented v1.0 behaviour and existing clients depend on its shape.
+        if (p.farField) {
+          // The ring compares REAL LDEM radial elevations against the
+          // observer's radial elevation, which only exists when the dataset
+          // is grounded in a measured DEM (the datum of a procedural site is
+          // nominal). Refuse rather than return a physically meaningless
+          // skyline with real-data provenance attached.
+          if (!/measured/.test(widest.elevationProvenance)) {
+            throw new TerrainError(
+              ERROR_CODES.INVALID_CONFIG,
+              `Far-field horizon requires a DEM-grounded dataset: the ` +
+                `observer's radial elevation comes from the measured datum, ` +
+                `and layer '${widest.id}' has elevationProvenance ` +
+                `'${widest.elevationProvenance}'.`,
+              { layerId: widest.id, elevationProvenance: widest.elevationProvenance },
+            );
+          }
+          const ff = (typeof p.farField === 'object' ? p.farField : {}) as {
+            demPath?: string;
+            maxRangeMeters?: number;
+          };
+          const labelPath =
+            ff.demPath ?? process.env.LTS_LDEM_75S ?? DEFAULT_LDEM_75S_LABEL;
+          if (!existsSync(labelPath)) {
+            throw new TerrainError(
+              ERROR_CODES.DEM_UNAVAILABLE,
+              `Far-field horizon needs the LOLA LDEM_75S product, and ` +
+                `${labelPath} does not exist. There is no fallback: a horizon ` +
+                `computed without the far field would silently understate ` +
+                `shadowing. Fetch it with scripts/fetch-data.sh, or point ` +
+                `farField.demPath / LTS_LDEM_75S at the .lbl file.`,
+              { demPath: labelPath, envOverride: 'LTS_LDEM_75S' },
+            );
+          }
+          const raster = openFarFieldRaster(labelPath);
+
+          // Observer selenographic position and radial elevation. Stored
+          // heights are tangent-plane values relative to the datum with the
+          // curvature drop removed at ingestion (sample.ts), so the absolute
+          // radial elevation restores both terms exactly.
+          const worldX = widest.bounds.minX + cx * widest.horizontalResolutionMeters;
+          const worldZ = widest.bounds.minZ + cz * widest.horizontalResolutionMeters;
+          const frame = buildLocalFrame(
+            dataset.origin.site.latitudeDeg,
+            dataset.origin.site.longitudeDeg,
+          );
+          const proj = localToProjected(frame, worldX, worldZ);
+          const ll = inverse(proj.x, proj.y);
+          const localH = sampleBilinear(sampler, cx, cz);
+          const radialElevationM =
+            dataset.origin.datumElevationM +
+            localH +
+            (worldX * worldX + worldZ * worldZ) / (2 * LUNAR_REFERENCE_RADIUS_M);
+
+          const far = farFieldHorizon(
+            raster,
+            {
+              latitudeDeg: ll.latitudeDeg,
+              longitudeDeg: ll.longitudeDeg,
+              radialElevationM,
+            },
+            {
+              azimuthBins: bins,
+              maxRangeM: ff.maxRangeMeters !== undefined ? num(ff, 'maxRangeMeters') : undefined,
+            },
+          );
+
+          const merged = new Float32Array(bins);
+          for (let i = 0; i < bins; i++) {
+            merged[i] = Math.max(profile[i], far.horizonElevationDeg[i]);
+          }
+          return ok(req.id, {
+            layerId: widest.id,
+            bins,
+            azimuthStepDeg: 360 / bins,
+            horizonElevationDeg: Array.from(merged),
+            nearFieldElevationDeg: Array.from(profile),
+            farField: {
+              applied: true,
+              elevationDeg: Array.from(far.horizonElevationDeg),
+              source: far.source,
+              observer: far.observer,
+              startRangeM: far.startRangeM,
+              maxRangeM: far.maxRangeM,
+              truncatedAtM: far.truncatedAtM === Infinity ? null : far.truncatedAtM,
+              noDataSamples: far.noDataSamples,
+              method:
+                'Great-circle ray-march over LDEM_75S radial elevations, exact ' +
+                'spherical elevation angles (Mazarico et al. 2011 reference ' +
+                'method); merged with the near field by per-bin max.',
+            },
+            note:
+              'horizonElevationDeg is the per-bin max of the near-field layer ' +
+              'profile and the far-field LDEM ring. The far field is bounded ' +
+              'by the 120 m/px source: rims sharper than that are smoothed, ' +
+              'so the merged skyline remains a lower bound near ridgelines.',
+          });
+        }
+
         return ok(req.id, {
           layerId: widest.id,
           bins,

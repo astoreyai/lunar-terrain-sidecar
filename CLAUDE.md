@@ -60,8 +60,9 @@ from `godot/example-project` with the addon copied into `addons/`).
 
 - **Test ports are a global registry**: 8791 protocol, 8793 UI-sidecar, 8795
   godot-integration, 8801 construction, 8803 history, 8805 sync, 8807 DE,
-  8809 terramech, 8814+5201 media capture (`scripts/capture-media.ts`).
-  8796–8799 **and 8811** are held by unrelated system services. A new
+  8809 terramech, 8814+5201 media capture (`scripts/capture-media.ts`),
+  8816 far-horizon. 8796–8799 **and 8811** are held by unrelated system
+  services. A new
   suite needs a NEW port — a collision is green in isolation, red only in
   parallel runs.
 - **Never run two UI suites concurrently** (Vite 5199 + sidecar 8793 clash;
@@ -87,7 +88,8 @@ from `godot/example-project` with the addon copied into `addons/`).
 - LOLA LDEM_75S: `/mnt/projects/stewie/data/gis/raw/ldem_75s_120m.{img,lbl}` (read-only reference)
 - SPICE kernels: `/mnt/projects/datasets/spice_kernels/` (de440s.bsp + moon PA
   kernel + frames); override with `LTS_SPICE_DIR`. `scripts/fetch-data.sh`
-  re-downloads everything from verified public URLs.
+  re-downloads everything from verified public URLs (incl. LDEM_75S for the
+  far-field horizon; override with `LTS_LDEM_75S`).
 - Validation oracle: `/mnt/projects/ephem` (`ephemkit`, jplephem/Skyfield venv,
   itself Horizons-validated) — used only to generate frozen test references.
 
@@ -107,9 +109,10 @@ citable oracle.
 
 ## Sensible next work (none blocking)
 
-- Far-field horizon: merge a coarse LDEM_75S-based horizon ring beyond the
-  widest layer (the disclosed limitation in `docs/known-limitations.md`;
-  Mazarico et al. 2011 is the reference method).
+- Far-field horizon consumers: `terrain.getHorizon farField` is built
+  (ADR 0006, `packages/lunar-dem/src/farHorizon.ts`, tests port 8816) but
+  `isSunlit`/`sunlitFraction`/illumination stats callers and the UI don't
+  request it yet; the rendered shadow map is layer-only by design.
 - UI: expose `ephemeris_de` mode + terramech class overlay (server side done).
 - Godot dock: surface the construction/terramech RPC surface (import-focused today).
 - Sparse-delta consumption in the Godot addon (server side done, spec §19).
@@ -118,7 +121,8 @@ citable oracle.
 ## Conventions
 
 - ADRs in `docs/decisions/` — 0001 solar, 0002 coordinates, 0003 protocol
-  clients, 0004 DE440, 0005 terramechanics. Settled; extend, don't relitigate.
+  clients, 0004 DE440, 0005 terramechanics, 0006 far-field horizon. Settled;
+  extend, don't relitigate.
 - Commit style: what + why + measured evidence + gate line (see history).
 - Aaron's global rules apply: no stubs/TODOs/synthetic data; Outbox for
   anything third-party-bound; deliverables staged for his review, never sent.

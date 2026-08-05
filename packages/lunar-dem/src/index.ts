@@ -10,3 +10,4 @@ export * from './projection.js';
 export * from './pds.js';
 export * from './source.js';
 export * from './sample.js';
+export * from './farHorizon.js';

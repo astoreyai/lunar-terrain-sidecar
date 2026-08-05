@@ -58,13 +58,21 @@ The sidecar holds exactly one session with one dataset (`Session` in `apps/headl
 - **Protocol-version enforcement is major-version only.** Both shipped clients (browser `rpc.ts`, Godot `sidecar_client.gd`) disconnect with an error when the sidecar's announced protocol **major** version differs from theirs (`CLIENT_PROTOCOL_MAJOR`). Minor/patch drift is tolerated by design; a breaking change within the same major would not be caught. See [protocol.md](protocol.md).
 - **Cross-engine bit-reproducibility is proven only for the noise core.** Feature models and the ephemeris use transcendental functions whose rounding is engine-dependent; byte-identity is verified on a fixed platform by the `reproduce` gate. See [reproducibility.md](reproducibility.md).
 
-- **Horizon and shadow fidelity are bounded by the widest configured layer.**
-  `horizonProfile` ray-marches the widest layer and stops where rays leave its
-  grid, so terrain beyond that extent cannot contribute to the skyline. At
-  grazing polar sun this matters: a 13 m ridge at 500 m subtends the same
-  1.5 degrees as a 260 m massif at 10 km, and real south-polar skylines are
-  set by relief tens of kilometres away. The shipped example's 1 km context
-  layer is a demonstrator, not an illumination-study configuration — polar
-  illumination work needs a context layer of tens of kilometres (the LOLA
-  120 m product supports this) and should be checked against the long-range
-  horizon method of Mazarico et al. (2011, Icarus 211).
+- **Horizon and shadow fidelity are bounded by the widest configured layer —
+  unless the far-field ring is requested.** `horizonProfile` ray-marches the
+  widest layer and stops where rays leave its grid, so by default terrain
+  beyond that extent cannot contribute to the skyline. At grazing polar sun
+  this matters: a 13 m ridge at 500 m subtends the same 1.5 degrees as a
+  260 m massif at 10 km, and real south-polar skylines are set by relief tens
+  of kilometres away. `terrain.getHorizon` now takes an opt-in
+  `farField` parameter ([ADR 0006](decisions/0006-far-field-horizon.md)) that
+  great-circle-marches the real LOLA LDEM_75S 120 m/px product out to 100 km
+  (configurable) and merges it by per-bin max — the reference method of
+  Mazarico et al. (2011, Icarus 211). Two bounds remain even then: the ring
+  smooths rims sharper than 120 m (the merged skyline stays a lower bound
+  near ridgelines), and it corrects horizon/illumination *queries* only —
+  the viewport's shadow map still sees layer geometry alone, so rendered
+  shadows (including `docs/media/solar-sweep.gif`) continue to err bright.
+  It is off by default and requires a DEM-grounded dataset; missing product
+  or a procedural datum is a structured error, never a silent near-field
+  answer.

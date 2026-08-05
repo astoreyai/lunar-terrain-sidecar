@@ -94,10 +94,15 @@ by the operator and recorded in provenance (17.5 m for the shipped 5 m/px
 example) — a stated input, not a derived constant. The pipeline exports heightmaps (float32 raw, EXR,
 PNG16, npy), GLB meshes, tiles, semantic and elevation-source masks, and
 manifests with per-artifact SHA-256 checksums. Terrain-shadow horizons are
-ray-marched over the widest configured layer, bounding skyline fidelity to
-its extent: the shipped 1 km context is a demonstrator, and polar
-illumination studies need context layers of tens of kilometres
-[@mazarico2011].
+ray-marched over the widest configured layer by default, bounding skyline
+fidelity to its extent; an opt-in far-field mode additionally marches the
+LOLA 120 m/px polar product along great circles to 100 km — the reference
+approach of long-range polar horizon computation [@mazarico2011] — and
+merges the two skylines by per-bin maximum, since distant relief can raise
+a horizon but never lower it. Rendered viewport shadows still come from
+layer geometry alone, so the shipped 1 km context remains a demonstrator
+for imagery, while horizon and illumination queries can carry the far
+field.
 
 Around that core:
 

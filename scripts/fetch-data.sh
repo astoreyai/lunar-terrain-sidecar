@@ -30,6 +30,7 @@ DEM_DIR="$DATA_DIR/lola_5mpp"
 
 NAIF_BASE="https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 PGDA_BASE="https://pgda.gsfc.nasa.gov/data/LOLA_5mpp"
+LOLA_GDR_BASE="https://pds-geosciences.wustl.edu/lro/lro-l-lola-3-rdr-v1/lrolol_1xxx/data/lola_gdr/polar/img"
 
 # file|url|sha256 (sha256 of the copies validated in this repo, 2026-08-03)
 KERNELS=(
@@ -39,6 +40,12 @@ KERNELS=(
 )
 DEMS=(
   "Site01_final_adj_5mpp_surf.tif|$PGDA_BASE/Site01/Site01_final_adj_5mpp_surf.tif|3ba7b97cb00a2bcf21189c3aeb535f65afc21207154ab9f0d43c5bdc1f7e747e"
+)
+# LOLA gridded 120 m/px polar product (75S-90S), used by the opt-in far-field
+# horizon ring (ADR 0006). 116 MB image + detached label.
+LDEM=(
+  "ldem_75s_120m.img|$LOLA_GDR_BASE/ldem_75s_120m.img|ae3afc3c75c33d43666ca06c83ca08f0b12ef03b7d36d2d791d972730794391b"
+  "ldem_75s_120m.lbl|$LOLA_GDR_BASE/ldem_75s_120m.lbl|5c59b16ec8a610792b1776fa082e409c8cc9f6743757710d14876ef366acd99a"
 )
 
 fetch() {
@@ -65,7 +72,7 @@ fetch() {
   echo "   sha256 OK"
 }
 
-mkdir -p "$SPICE_DIR" "$DEM_DIR"
+mkdir -p "$SPICE_DIR" "$DEM_DIR" "$DATA_DIR/lola_ldem"
 
 for entry in "${KERNELS[@]}"; do
   IFS='|' read -r name url sha <<<"$entry"
@@ -77,8 +84,15 @@ for entry in "${DEMS[@]}"; do
   fetch "$name" "$url" "$sha" "$DEM_DIR"
 done
 
+LDEM_DIR="$DATA_DIR/lola_ldem"
+for entry in "${LDEM[@]}"; do
+  IFS='|' read -r name url sha <<<"$entry"
+  fetch "$name" "$url" "$sha" "$LDEM_DIR"
+done
+
 ABS_SPICE="$(cd "$SPICE_DIR" && pwd)"
 ABS_DEM="$(cd "$DEM_DIR" && pwd)"
+ABS_LDEM="$(cd "$LDEM_DIR" && pwd)"
 
 cat <<EOF
 
@@ -106,6 +120,12 @@ Point the tools at them:
      Note: editing dem.path changes the canonical configuration hash recorded
      in exports (the path is part of the config); the generated terrain bytes
      themselves depend only on the DEM contents, which the checksum pins.
+
+  3. LOLA LDEM_75S (far-field horizon ring, terrain.getHorizon farField):
+
+       export LTS_LDEM_75S="$ABS_LDEM/ldem_75s_120m.lbl"
+
+     or per-request:  "farField": { "demPath": "$ABS_LDEM/ldem_75s_120m.lbl" }
 
 Other PGDA 5 m/px sites (Site04, Site06, Site07, Site11, Site20, Site23,
 Haworth, Shoemaker, DM2) follow the same URL pattern:

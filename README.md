@@ -259,6 +259,13 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
   sub-solar latitude envelope migrates with the nodal cycle.
   `illuminationStatistics` reports the span it was given; it does not assert a
   PSR from a short sample.
+- **Skyline fidelity is bounded by the widest layer by default; an opt-in
+  far-field ring lifts the bound for queries.** `terrain.getHorizon` with
+  `farField: true` great-circle-marches the real LOLA LDEM_75S 120 m/px
+  product to 100 km and merges it by per-bin max (the Mazarico et al. 2011
+  reference method; docs/decisions/0006-far-field-horizon.md). Distant relief
+  can only raise a horizon, so the near-field-only default errs bright — and
+  the *rendered* viewport shadows still use layer geometry alone either way.
 - **The browser viewport is a decimated preview.** Layers are streamed at a
   stride that bounds each to ~512 samples per edge (a 3001² operational layer
   is 36 MB of float32). Anything a user might act on — elevation, slope,
