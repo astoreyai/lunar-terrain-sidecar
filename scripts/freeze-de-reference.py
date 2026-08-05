@@ -1,4 +1,6 @@
-#!/mnt/projects/ephem/.venv/bin/python
+#!/usr/bin/env python3
+# Requires jplephem + spiceypy; the validated oracle venv on the dev machine
+# is /mnt/projects/ephem, but any environment with those packages works.
 """Freeze an independent DE440 reference for tests/lunar-solar.de.test.ts.
 
 Generates tests/data/de-reference.json from the REAL kernels in

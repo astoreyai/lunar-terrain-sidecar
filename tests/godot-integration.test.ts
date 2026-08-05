@@ -19,7 +19,7 @@ import type { WebSocketServer } from 'ws';
 import { startServer } from '../apps/headless-server/src/server.js';
 
 const REPO = resolve(__dirname, '..');
-const GODOT = '/mnt/projects/tools/Godot_v4.6.3-stable_linux.x86_64';
+import { GODOT_BIN as GODOT } from './paths.js';
 const SHARED_PROJECT = join(REPO, 'godot/example-project');
 const ADDON_SRC = join(REPO, 'godot/addon/lunar_terrain');
 const WORK = join(REPO, '.test-artifacts/integration');

@@ -21,7 +21,7 @@ Scope: every artifact the exporter writes, byte-level format details, the lossy/
 └── checksums.sha256
 ```
 
-Format toggles: `ExportOptions.formats {exr, png16, npy, glb}` (`writer.ts`); via CLI `lunar-terrain generate --no-exr --no-png --no-glb --npy` (`apps/headless-server/src/cli.ts`); via RPC `terrain.export` params. rf32, the masks, the JSON manifests and the checksums are unconditional. Every artifact is recorded in the manifest with its byte size, SHA-256 and an `encoding` block describing its mapping — a heightmap that silently normalised or lost a sign would be worse than none (`raster.ts` header).
+Format toggles: `ExportOptions.formats {exr, png16, npy, glb}` (`writer.ts`); via CLI `npm run terrain -- generate --no-exr --no-png --no-glb --npy` (`apps/headless-server/src/cli.ts`); via RPC `terrain.export` params. rf32, the masks, the JSON manifests and the checksums are unconditional. Every artifact is recorded in the manifest with its byte size, SHA-256 and an `encoding` block describing its mapping — a heightmap that silently normalised or lost a sign would be worse than none (`raster.ts` header).
 
 ## height.rf32 — raw float32 (lossless, canonical)
 

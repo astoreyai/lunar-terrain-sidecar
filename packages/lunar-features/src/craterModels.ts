@@ -11,8 +11,7 @@
  *   - Neukum, Ivanov & Hartmann (2001), "Cratering records in the inner solar
  *     system in relation to the lunar reference system", *Space Science
  *     Reviews* 96:55–86 — production function polynomial and chronology.
- *   - Xiao & Werner (2015), "Change of crater size-frequency distribution with
- *     crater degradation and implications for lunar surface ages", *JGR
+ *   - Xiao & Werner (2015), "Size-frequency distribution of crater populations in equilibrium on the Moon", *JGR
  *     Planets* 120:2277–2292 — empirical equilibrium (saturation) density.
  *   - Pike (1977), "Size-dependence in the shape of fresh impact craters on the
  *     Moon", in *Impact and Explosion Cratering* — simple-crater depth/diameter
@@ -134,9 +133,11 @@ export function productionDensity(diameterKm: number, ageGa: number): number {
  *
  * Source locus: Xiao & Werner (2015) report lunar crater equilibrium at a
  * few percent of geometric saturation; 0.084·D⁻² equals 5.5% of the Trask
- * geometric-saturation curve 1.54·D⁻², the level their study characterises
- * for small lunar craters. The single-coefficient power law is the standard
- * summary form of that finding.
+ * geometric-saturation curve 1.54·D⁻² for small lunar craters — one
+ * representative level within the ~1–10%-of-saturation span across their
+ * counted terrains (which did not include south-polar ancient highlands).
+ * The single-coefficient power law is the standard summary form; treat the
+ * coefficient as a defensible point choice, not a universal constant.
  *
  * Scale-free: `n` and `D` share length units, so `n·D² = 0.084` — a surface in
  * equilibrium keeps a fixed fractional coverage regardless of scale, because it
@@ -194,11 +195,15 @@ export function freshDepthDiameterRatio(diameterM: number): number {
 /**
  * Rim height of a fresh simple crater, metres.
  *
- * Pike (1977): h_r = 0.036 D^1.014 with both in kilometres. The exponent is
- * close to 1, so this is *nearly* proportional — the earlier shorthand of a
- * flat 4% overshot the source by ~14% across the 1–400 m synthesis range
- * (3.51 m vs 4.0 m at D = 100 m), and at grazing polar sun a rim's shadow
- * length scales directly with its height.
+ * Pike (1977): h_r = 0.036 D^1.014 with both in kilometres — the power-law
+ * fit for fresh simple craters reported in that chapter's morphometric
+ * tables. Secondary sources often restate the linear shorthand h = 0.036 D;
+ * the 1.014 exponent used here is the fitted value, and readers checking the
+ * provenance should consult Pike (1977) directly. The exponent is close to
+ * 1, so this is *nearly* proportional — the earlier flat-4% shorthand
+ * overshot the source by ~14% across the 1–400 m synthesis range (3.51 m vs
+ * 4.0 m at D = 100 m), and at grazing polar sun a rim's shadow length scales
+ * directly with its height.
  */
 export const PIKE_RIM_COEFFICIENT = 0.036;
 export const PIKE_RIM_EXPONENT = 1.014;

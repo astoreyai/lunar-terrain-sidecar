@@ -38,7 +38,7 @@ The single rule that keeps real and synthetic content from double-counting, appl
 Citations exactly as recorded in `craterModels.ts` and emitted into `provenance.literatureModels`:
 
 - Neukum, Ivanov & Hartmann (2001), "Cratering records in the inner solar system in relation to the lunar reference system", *Space Science Reviews* 96:55–86 — production function polynomial and chronology.
-- Xiao & Werner (2015), "Change of crater size-frequency distribution with crater degradation and implications for lunar surface ages", *JGR Planets* 120:2277–2292 — empirical equilibrium (saturation) density.
+- Xiao & Werner (2015), "Size-frequency distribution of crater populations in equilibrium on the Moon", *JGR Planets* 120:2277–2292 — empirical equilibrium (saturation) density.
 - Pike (1977), "Size-dependence in the shape of fresh impact craters on the Moon", in *Impact and Explosion Cratering*, 489–509 — simple-crater depth/diameter and rim height.
 - Stopar et al. (2017), "Relative depths of simple craters and the nature of the lunar regolith", *Icarus* 298:34–48 — shallowing of d/D below ~400 m.
 - McGetchin, Settle & Head (1973), "Radial thickness variation in impact crater ejecta", *EPSL* 20:226–236 — ejecta blanket thickness.
@@ -102,3 +102,13 @@ Emitted verbatim into `provenance.syntheticHeuristics` / `limitations` of every 
 - **Fully synthetic sites** (no DEM configured) carry the limitation "all elevations in this dataset are procedurally synthesised".
 
 The per-sample `elevation_source.r8` mask ([export-formats.md](export-formats.md)) records measurement vs synthesis at sample granularity. If a configured DEM is missing, generation fails; there is no synthetic fallback.
+
+## Two regolith densities, on purpose
+
+Construction cut/fill mass accounting uses **1500 kg/m³** (config
+`bulkDensityKgM3`, default 1500): excavated, loosened spoil at the low end
+of the Apollo bulk-density range. The terramechanics soil parameter set uses
+**1660 kg/m³** (ADR 0005, NTRS 20220010732): *in-situ* consolidated regolith
+under a wheel. Both sit inside Mitchell et al. (1972)'s measured 1500–1750
+kg/m³ span; they differ because disturbed spoil and undisturbed surface are
+different states of the same material.

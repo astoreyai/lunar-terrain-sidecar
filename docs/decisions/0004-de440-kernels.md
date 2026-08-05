@@ -91,8 +91,7 @@ literature estimate:
 
 - over the 24 frozen test epochs (2020–2049): **max 0.0095°**
   (at 2028-10-27);
-- over the shipped reproducible sweep (`lunar-terrain de-compare --months
-  360`, mean-month stepping, 2020–2049): **mean 0.0040°, max 0.0111°**
+- over the shipped reproducible sweep (`npm run terrain -- de-compare --months 360`, mean-month stepping, 2020–2049): **mean 0.0040°, max 0.0111°**
   (at 2028-11-30);
 - a denser development-time sweep on a different epoch grid measured **max
   0.0118°** (at 2035-06-11) — quoted here for the record; the citable

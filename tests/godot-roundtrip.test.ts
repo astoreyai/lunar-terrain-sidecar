@@ -25,7 +25,7 @@ import { validateDataset } from '@lts/terrain-validation';
 import { Rng } from '@lts/terrain-core';
 
 const REPO = resolve(__dirname, '..');
-const GODOT = '/mnt/projects/tools/Godot_v4.6.3-stable_linux.x86_64';
+import { GODOT_BIN as GODOT } from './paths.js';
 const SHARED_PROJECT = join(REPO, 'godot/example-project');
 const ADDON_SRC = join(REPO, 'godot/addon/lunar_terrain');
 const WORK = join(REPO, '.test-artifacts/roundtrip');

@@ -45,9 +45,7 @@ stamped into DEM-grounded layers. Crater and rock populations are anchored
 to published models: the Neukum production function [@neukum2001] capped by
 empirical equilibrium [@xiao2015], with sub-10 m diameters continued by a disclosed slope extrapolation (the equilibrium cap governs that regime on ancient surfaces); Pike/Stopar morphometry [@pike1977;
 @stopar2017]; McGetchin ejecta [@mcgetchin1973]; and the Golombek rock SFD
-[@golombek1997; @golombek2003]. The Golombek form is calibrated on Mars and
-Earth-analog sites and anchored to the Moon via Surveyor-era counts. Areal
-coverage is a user parameter; Diviner rock-abundance values, which count
+[@golombek1997; @golombek2003]. The Golombek form is calibrated on Mars and Earth-analog sites and applied here as an analog model. Areal coverage is a user parameter; Diviner rock-abundance values, which count
 meter-scale rocks, are typically well below the demonstration coverage
 [@bandfield2011]. Solar elevation and azimuth are never free parameters:
 they come from a real ephemeris, either a Meeus/IAU analytic chain
@@ -61,7 +59,7 @@ reproduces all 183 exported artifacts byte-for-byte.
 
 At a lunar pole the Sun never rises more than about 1.54° above the horizon: the Moon's spin axis is inclined only 1.5424° to the
 ecliptic [@archinal2011]. Shadow length scales as
-$1/\tan(\text{elevation})$, so a 1 m rock throws a 38 m shadow, and crater
+$1/\tan(\text{elevation})$, so a 1 m rock throws a 37 m shadow, and crater
 interiors can be permanently shadowed. Polar illumination is therefore a
 function of *topography and date*: a "sun angle slider" cannot produce
 physically consistent elevation/azimuth pairs. Polar rover simulation needs
@@ -129,7 +127,7 @@ cohesion, friction angle, and density asserted by test to sit inside the
 Apollo in-situ ranges of Mitchell et al. [@mitchell1972]. For a 450 kg
 VIPER-class reference rover (four 0.20 m × 0.25 m wheels, 1.62 m/s²) the
 model gives $\approx 13$ mm static sinkage, $\approx 460$ N flat-ground
-drawbar pull, and a $\approx 33°$ slope margin. These are static upper bounds (full-slip thrust; Bekker's fuller wheel derivation, hand-derived in a decision record, lowers the margin by about 2.3° and *raises* sinkage to $pprox 18$ mm); operational planners cap traverses well below them. The Bekker–Wong assessment
+drawbar pull, and a $\approx 33°$ slope margin. These are static upper bounds (full-slip thrust; Bekker's fuller wheel derivation, hand-derived in a decision record, lowers the margin by about 2.3° and *raises* sinkage to $\approx 18$ mm); operational planners cap traverses well below them. The Bekker–Wong assessment
 replaced a hand-weighted heuristic, which remains available and labeled.
 Two boundaries are stated explicitly. First, a provenance block travels
 with every response, recording that the parameters are
@@ -152,7 +150,7 @@ tested against nine independent properties of the Earth–Moon–Sun system
 
 | Invariant | Source of truth | Result |
 |---|---|---|
-| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.59° |
+| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.59° (libration; see below) |
 | Sub-solar latitude period $\approx 346.6$ d | draconic year | passes |
 | Sub-solar longitude period 29.5306 d, westward | synodic month, prograde rotation | passes |
 | Solar elevation at −90° = −(sub-solar latitude) | geometric identity | agrees to $10^{-9}$ ° |
@@ -168,7 +166,7 @@ The table states physical invariants; committed assertions carry small padding (
 (validated to < $10^{-9}$ rad against a frozen `jplephem`/CSPICE reference)
 provides the first direct measurement of the analytic chain's error:
 sub-solar point separation of mean 0.0040°, maximum **0.0111°**, over 360
-monthly epochs spanning 2020–2049. The sweep reproduces via `npm run terrain -- de-compare --months 360`, its maximum asserted in-suite below 0.012° when kernels are present; a denser development sweep measured 0.0118°. Both sit inside the documented 0.01–0.03° budget of the IAU frame realization.
+monthly epochs spanning 2020–2049. The sweep reproduces via `npm run terrain -- de-compare --months 360`, its maximum asserted in-suite below 0.012° when kernels are present. Both figures sit inside the documented 0.01–0.03° budget of the IAU frame realization.
 
 **DEM ingestion versus GDAL.** Georeferencing, projection, and elevation
 reads of the real LOLA/PGDA products are tested against the products' own
@@ -178,9 +176,7 @@ PDS labels and GDAL's independent reading, not fixtures.
 145 probe points agree with the sidecar's elevations to a measured
 **9.0 × $10^{-6}$ m** on-grid and 1.0 × $10^{-2}$ m off-grid (the expected
 bilinear-versus-triangulated difference); the committed assertions gate at
-2 × $10^{-3}$ m and 5 × $10^{-2}$ m. The addon lifecycle test measures
-6 × $10^{-6}$ m agreement through collision over its 12 probes and 0.000%
-cut/fill imbalance on a mass-conserving edit.
+2 × $10^{-3}$ m and 5 × $10^{-2}$ m. The addon lifecycle test measures 6 × $10^{-6}$ m agreement through collision over its 12 probes (asserted below $10^{-2}$ m) and 0.000% cut/fill imbalance (asserted below 1%).
 
 **Determinism.** Regenerating the shipped site reproduces **183/183
 artifacts byte-identically** on a fixed platform and Node build;

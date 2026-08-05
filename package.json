@@ -3,7 +3,7 @@
   "version": "0.1.2",
   "private": true,
   "type": "module",
-  "description": "Three.js lunar terrain generation, authoring and preprocessing sidecar for a Godot-based lunar robotics simulation.",
+  "description": "Lunar south-polar terrain generation, authoring, and preprocessing sidecar for Godot robotics simulation (JSON-RPC server, Three.js authoring UI, Godot 4 addon)",
   "license": "MIT",
   "author": {
     "name": "Aaron Storey",
@@ -12,9 +12,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/astoreyai/lunar-terrain-sidecar"
-  },
-  "bin": {
-    "lunar-terrain": "apps/headless-server/src/cli.ts"
   },
   "engines": {
     "node": ">=20.10"

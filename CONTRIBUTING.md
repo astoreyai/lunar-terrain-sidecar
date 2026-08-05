@@ -33,3 +33,12 @@ and we will ask for one.
 
 Open an issue with the `question` label. For the data files, run
 `scripts/fetch-data.sh` first — most setup problems are missing kernels/DEMs.
+
+## Test ports are a fixed registry
+
+Each server-spawning suite owns a fixed loopback port (8791 protocol, 8793
+UI-sidecar, 8795 godot-integration, 8801 construction, 8803 history, 8805
+sync, 8807 DE, 8809 terramech, 8816 far-horizon; the UI suite also uses
+5199 for Vite). `npm test` is therefore not re-entrant: a second concurrent
+run, or anything else holding one of these ports, fails that suite. Pick an
+unused port for any new server-spawning suite.

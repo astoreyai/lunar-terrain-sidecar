@@ -691,11 +691,12 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     // The sidecar session outlives the page. A fresh page connecting to a
     // sidecar that already holds terrain must render it without a Generate
     // click — the first-run experience this suite previously never exercised.
-    // 'domcontentloaded', not 'load': under SwiftShader the full load event
-    // can dawdle past 30 s re-initialising WebGL, and the app's own
-    // data-ready attribute below is the gate that actually matters.
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
+    // 'commit' (weakest navigation signal) with a generous timeout: under a
+    // full-suite run every core is saturated and even domcontentloaded can
+    // straggle past Playwright's 30 s default. The app's own data-ready
+    // attribute below is the gate that actually matters.
+    await page.reload({ waitUntil: 'commit', timeout: 120_000 });
+    await page.waitForSelector('body[data-ready="true"]', { timeout: 120_000 });
     await page.fill('#sidecar-url', `ws://127.0.0.1:${SIDECAR_PORT}`);
     await page.click('#btn-connect');
     await waitForText(page, '#insp-terrain', 'ui_roundtrip', 30_000);

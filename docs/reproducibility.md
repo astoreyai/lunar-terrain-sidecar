@@ -45,12 +45,12 @@ Consequence, stated precisely: byte-identical reproduction is **guaranteed by co
 ## The reproduce gate
 
 ```
-npm run terrain -- reproduce <config.json>       # CLI: lunar-terrain reproduce
+npm run terrain -- reproduce <config.json>
 ```
 
 `cmdReproduce` (`cli.ts`):
 
-1. Loads and validates the config; requires a prior export's `manifest.json` in the config's `outputDirectory` (exits 2 otherwise: "run `lunar-terrain generate` first").
+1. Loads and validates the config; requires a prior export's `manifest.json` in the config's `outputDirectory` (exits 2 otherwise: "run `npm run terrain -- generate` first").
 2. Regenerates the full dataset and re-exports into a scratch directory `<outputDirectory>/.reproduce`, leaving the original untouched.
 3. Compares the SHA-256 of **every artifact** in the new export against the prior manifest's `artifacts` list, path by path.
 4. Prints the current `configurationHash` next to the prior one, the matched count, any paths missing from the prior export, and up to 20 mismatched paths. Exit code 1 on any mismatch; `reproduced byte-for-byte.` when all artifacts match and none are missing.
@@ -72,3 +72,14 @@ npm run terrain -- reproduce <config.json>       # CLI: lunar-terrain reproduce
 | Interactive edits (`terrain.applyOperation`) | not part of `generate` reproduction at all — edits are separate replayable, checksum-chained delta records ([protocol.md](protocol.md)); `reproduce` regenerates the *un-edited* terrain from config + seed |
 
 Renaming a seed channel or reordering channel *derivation* does not matter (derivation is by name); renaming a **layer id or procedural-stack id** does, because channel names embed them (`crater:<layerId>`, `procedural:<id>`).
+
+## Committed oracle
+
+`examples/south_pole_site_01/expected-checksums.sha256` is the checked-in
+copy of the demonstration site's per-artifact SHA-256 list (183 entries).
+`npm run terrain -- reproduce` compares a fresh generation against the
+export it just made; this file lets a reader verify the *authors'* bytes —
+diff it against your own `generated/south_pole_site_01/checksums.sha256`.
+Note the configuration hash covers `dem.path`, so editing that path for
+your machine changes the config hash but not the terrain bytes; the
+checksums here are the byte-level ground truth.

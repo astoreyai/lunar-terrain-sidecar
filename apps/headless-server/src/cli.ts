@@ -144,7 +144,7 @@ async function cmdReproduce(path: string): Promise<void> {
 
   if (!existsSync(manifestPath)) {
     console.error(`no prior export to compare against at ${manifestPath}`);
-    console.error('run `lunar-terrain generate` first');
+    console.error('run `npm run terrain -- generate` first');
     process.exit(2);
   }
   const prior = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -316,14 +316,15 @@ async function main(): Promise<void> {
       default:
         console.log(`lunar-terrain — lunar terrain generation sidecar
 
-usage:
-  lunar-terrain generate  <config.json> [--quiet] [--no-exr] [--no-png] [--no-glb] [--npy]
-  lunar-terrain estimate  <config.json>
-  lunar-terrain validate  <generated-dir>
-  lunar-terrain reproduce <config.json>
-  lunar-terrain solar     <latDeg> <lonDeg> [isoUtc] [--sweep <days>]
-  lunar-terrain de-compare [--from 2020-01-01] [--months 360]   (needs DE440 kernels)
-  lunar-terrain serve     [--port 8768]
+usage:  npm run terrain -- <command>
+
+  generate  <config.json> [--quiet] [--no-exr] [--no-png] [--no-glb] [--npy]
+  estimate  <config.json>
+  validate  <generated-dir>
+  reproduce <config.json>
+  solar     <latDeg> <lonDeg> [isoUtc] [--sweep <days>]
+  de-compare [--from 2020-01-01] [--months 360]   (needs DE440 kernels)
+  serve     [--port 8768]
 
 coordinates: right-handed, Y-up, +X east, +Z south (north = -Z). metres throughout.`);
         process.exitCode = cmd ? 2 : 0;

@@ -162,7 +162,7 @@ All numbers below were produced by the commands in this README on this machine
 | samples | 10,259,003 |
 | craters / rocks | 8,023 / 6,409 |
 | artifacts | 183 files, 625.9 MB |
-| generate / export | 3.4 s / 1.8 s (8 worker threads, byte-identical to single-thread) |
+| generate / export | 3.8 s / 1.8 s (8 worker threads, byte-identical to single-thread) |
 | validation | 26 checks, 0 errors |
 | reproducibility | **183/183 artifacts byte-identical** |
 
@@ -208,7 +208,11 @@ export LTS_SPICE_DIR=...        #   enables the DE440 suites
 ```
 
 The Godot suites additionally need a Godot 4 editor binary on `LTS_GODOT`
-or PATH. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+or PATH. Hosted CI runs the dataset-free majority (~160 of 257 tests) and
+exercises the skip path for the rest; the kernel/DEM/Godot-gated assertions
+— including the ephemeris-accuracy and engine-round-trip claims — need the
+data fetched locally. `examples/south_pole_site_01/expected-checksums.sha256`
+is the committed oracle for the 183-artifact reproduce gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
 workflow.
 
 ```
