@@ -9,9 +9,10 @@
 #     lunar-solar.ephemeris: fully dataset-free. The one protocol test that
 #     needs a real DEM (the concurrency race window) skips itself when the
 #     DEM is absent.
-#   - lunar-solar.de and lunar-dem.real-data: gated on kernel/DEM presence
-#     with describe.skipIf — included here deliberately so the skip path
-#     (skip loudly, never fake-pass) is exercised in CI.
+#   - lunar-solar.de, lunar-dem.real-data, far-horizon: gated on kernel/DEM
+#     presence with describe.skipIf — included here deliberately so the skip
+#     path (skip loudly, never fake-pass) is exercised in CI. far-horizon's
+#     analytic-geometry block is dataset-free and runs everywhere.
 #
 # To run the gated suites for real, fetch the public data first:
 #   bash scripts/fetch-data.sh   (see the script for env/config pointers)
@@ -55,6 +56,7 @@ jobs:
           tests/lunar-solar.ephemeris.test.ts
           tests/lunar-solar.de.test.ts
           tests/lunar-dem.real-data.test.ts
+          tests/far-horizon.test.ts
 
   # These suites need what a hosted runner does not have:
   #   - interactive-ui.test.ts: real Chromium (playwright) + WebGL, and the
