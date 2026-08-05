@@ -18,7 +18,7 @@ scripts/assemble-media.sh            # resizes/encodes into this directory
 | File | What it shows |
 |---|---|
 | `hero-lit.png` | The demonstration site (`examples/south_pole_site_01`) in the lit-regolith view at 2026-01-10T00:00:00Z — solar elevation 1.46°, azimuth 60.8°, from the ephemeris. |
-| `solar-sweep.gif` | 30 frames stepping the epoch from 2025-12-20 to 2026-01-19 — the site's actual lit window. Elevation stays between 0.82° and 1.90° while azimuth sweeps ~360°; the rotating shadows are the point: illumination is a function of topography and date, never a slider. |
+| `solar-sweep.gif` | 30 frames stepping the epoch from 2025-12-20 to 2026-01-19 — the window when the Sun is geometrically above the site's reference-sphere horizon. Elevation stays between 0.82° and 1.90° while azimuth sweeps ~360°; the rotating shadows are the point: illumination is a function of topography and date, never a slider. Shadows are cast by the site's own 1 km of terrain only; relief beyond the layer would only *add* shadow (a distant massif can raise the horizon, never lower it), so the sweep errs bright — see `docs/known-limitations.md`, "Horizon and shadow fidelity". |
 | `overlays.png` | The four analysis overlays (elevation, slope, semantic classes, traversability) over the same dataset. The traversability overlay renders the labelled heuristic, as its legend states. |
 | `topdown-elevation.png` | Top-down elevation view with nested layer boundaries (1 km context / 200 m mission / 30 m operational). |
 | `authoring-ui.png` | The full authoring UI: inspector, provenance panel, solar geometry, coordinate-system card. |
