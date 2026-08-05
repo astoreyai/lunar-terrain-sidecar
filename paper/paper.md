@@ -15,6 +15,7 @@ authors:
     orcid: 0009-0009-5560-0015
     affiliation: 1
   - name: John McCardle
+    orcid: 0009-0000-7044-4211
     affiliation: 2
   - name: Masudul H. Imtiaz
     orcid: 0000-0001-5528-482X
