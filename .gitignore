@@ -4,3 +4,4 @@ generated/
 *.tsbuildinfo
 .claude/
 paper/paper.pdf
+paper/jats/
