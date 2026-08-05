@@ -132,11 +132,11 @@ screening quantities of terramechanics-based planetary-rover analysis
 modeling-and-simulation values [@li2022terramechanics], asserted by test to
 sit inside the Apollo in-situ ranges of Mitchell et al. [@mitchell1972]. For
 a 450 kg VIPER-class reference rover (four 0.20 m × 0.25 m wheels, 1.62
-m/s²) the model gives ≈13 mm static sinkage, ≈460 N flat-ground drawbar
-pull, and a ≈33° slope margin — the thrust, drawbar-pull and
+m/s²) the model gives $\approx 13$ mm static sinkage, $\approx 460$ N flat-ground drawbar
+pull, and a $\approx 33°$ slope margin — the thrust, drawbar-pull and
 slope-margin figures are static upper bounds (full-slip thrust; Bekker's
 fuller wheel derivation lowers the margin by ~2° and *raises* sinkage to
-≈18 mm); operational planners cap lunar traverses well below such margins. This replaced a hand-weighted heuristic,
+$\approx 18$ mm); operational planners cap lunar traverses well below such margins. This replaced a hand-weighted heuristic,
 which remains available and labeled. Two boundaries are stated explicitly: a
 provenance block travels with every response recording that the parameters
 are equatorial-Apollo/simulant-derived — no polar site has in-situ soil
@@ -148,7 +148,7 @@ the terrain tool.
 
 # Validation and reproducibility
 
-The test suite (242 tests across 14 files at v0.1.0) validates against
+The test suite (255 tests across 15 files at v0.1.2) validates against
 authorities outside the code wherever one exists.
 
 **Ephemeris versus physical invariants.** The analytic solar chain is tested
@@ -158,17 +158,17 @@ against nine independent properties of the Earth–Moon–Sun system
 | Invariant | Source of truth | Result |
 |---|---|---|
 | Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.59° |
-| Sub-solar latitude period ≈ 346.6 d | draconic year | passes |
+| Sub-solar latitude period $\approx 346.6$ d | draconic year | passes |
 | Sub-solar longitude period 29.5306 d, westward | synodic month, prograde rotation | passes |
-| Solar elevation at −90° = −(sub-solar latitude) | geometric identity | agrees to 10⁻⁹ ° |
-| Earth–Sun distance ∈ [0.9833, 1.0167] au | perihelion/aphelion | passes |
-| Earth–Moon distance ∈ [356 400, 406 700] km | perigee/apogee | passes |
-| Lunar ecliptic latitude ≤ 5.3° | orbital inclination | passes |
+| Solar elevation at −90° = −(sub-solar latitude) | geometric identity | agrees to $10^{-9}$ ° |
+| Earth–Sun distance $\in$ [0.9833, 1.0167] au | perihelion/aphelion | passes |
+| Earth–Moon distance $\in$ [356 400, 406 700] km | perigee/apogee | passes |
+| Lunar ecliptic latitude $\leq$ 5.3° | orbital inclination | passes |
 | New moon 2000-01-06 18:14 UTC | tabulated event | elongation < 0.1° |
-| Synodic month from 791 lunations | 29.530589 d | < 10⁻⁴ d |
+| Synodic month from 791 lunations | 29.530589 d | < $10^{-4}$ d |
 
 **Measured accuracy against JPL's integrated ephemeris.** The DE440 reader
-(validated to < 10⁻⁹ rad against a frozen `jplephem`/CSPICE reference)
+(validated to < $10^{-9}$ rad against a frozen `jplephem`/CSPICE reference)
 provides the first direct measurement of the analytic chain's error:
 sub-solar point separation of mean 0.0040°, maximum **0.0111°** over 360
 monthly epochs spanning 2020–2049 (reproducible via `lunar-terrain
@@ -181,9 +181,9 @@ reads of the real LOLA/PGDA products are tested against the products' own
 PDS labels and GDAL's independent reading, not against fixtures.
 
 **Engine round trip.** Raycasts against real Godot collision geometry at 145
-probe points agree with the sidecar's elevations to **9.0 × 10⁻⁶ m**
-on-grid (1.0 × 10⁻² m off-grid, the expected bilinear-versus-triangulated
-difference); the full addon lifecycle test measures 6 × 10⁻⁶ m agreement
+probe points agree with the sidecar's elevations to **9.0 × $10^{-6}$ m**
+on-grid (1.0 × $10^{-2}$ m off-grid, the expected bilinear-versus-triangulated
+difference); the full addon lifecycle test measures 6 × $10^{-6}$ m agreement
 through collision and 0.000% cut/fill imbalance on a mass-conserving edit.
 
 **Determinism.** Regenerating the shipped site reproduces **183/183
@@ -213,7 +213,7 @@ Xiao–Werner equilibrium; the Golombek SFD) rather than generic power laws,
 de-conflicted against the DEM's effective resolution; a checksummed
 byte-reproducibility contract with deterministic edit replay; and an
 engine-agnostic protocol whose round trip into a real engine is numerically
-verified to 9.0 × 10⁻⁶ m. It is complementary to renderers and physics
+verified to 9.0 × $10^{-6}$ m. It is complementary to renderers and physics
 stacks — the terrain and illumination authority they could consume — and
 deliberately defers wheel–soil dynamics to deformable-terrain physics
 engines such as Project Chrono [@tasora2016].

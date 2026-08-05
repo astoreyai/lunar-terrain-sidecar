@@ -3,3 +3,4 @@ generated/
 .test-artifacts/
 *.tsbuildinfo
 .claude/
+paper/paper.pdf
