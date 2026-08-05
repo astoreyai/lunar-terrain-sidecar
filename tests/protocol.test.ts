@@ -17,7 +17,7 @@ import { METHODS, PROTOCOL_VERSION, RPC_CODES } from '@lts/terrain-protocol';
 const PORT = 8791;
 const WORK = resolve(__dirname, '../.test-artifacts/protocol');
 /** Real DEM used only by the concurrency test (its yield opens the race window). */
-const CONCURRENCY_DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { SITE01_DEM as CONCURRENCY_DEM } from './paths.js';
 
 let server: WebSocketServer;
 let socket: WebSocket;

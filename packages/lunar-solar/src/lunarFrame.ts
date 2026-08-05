@@ -3,7 +3,7 @@
  *
  * Reference: Archinal et al. (2011), "Report of the IAU Working Group on
  * Cartographic Coordinates and Rotational Elements: 2009", *Celestial Mechanics
- * and Dynamical Astronomy* 109:101–135, with the 2015 erratum (110:401–403).
+ * and Dynamical Astronomy* 109:101–135, with the 2011 erratum (CMDA 110(4):401–403) (110:401–403).
  *
  * ## Which lunar frame this is, and what that costs
  *

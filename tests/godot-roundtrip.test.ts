@@ -30,7 +30,7 @@ const SHARED_PROJECT = join(REPO, 'godot/example-project');
 const ADDON_SRC = join(REPO, 'godot/addon/lunar_terrain');
 const WORK = join(REPO, '.test-artifacts/roundtrip');
 const PROJECT = join(REPO, '.test-artifacts/roundtrip-project');
-const DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { SITE01_DEM as DEM } from './paths.js';
 
 const godotAvailable = existsSync(GODOT);
 const demAvailable = existsSync(DEM);

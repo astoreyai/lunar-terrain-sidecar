@@ -112,10 +112,11 @@ Point the tools at them:
        "dem": { "path": "$ABS_DEM/Site01_final_adj_5mpp_surf.tif", ... }
        (examples/south_pole_site_01/config.json)
 
-     or reproduce the expected path with a symlink:
+     or point the test suite and tools at it with environment variables
+     (no root needed):
 
-       sudo mkdir -p /mnt/projects/datasets
-       sudo ln -s "$ABS_DEM" /mnt/projects/datasets/lola_5mpp
+       export LTS_SITE01_DEM="$ABS_DEM/Site01_final_adj_5mpp_surf.tif"
+       export LTS_LDEM_75S="$ABS_LDEM/ldem_75s_120m.lbl"
 
      Note: editing dem.path changes the canonical configuration hash recorded
      in exports (the path is part of the config); the generated terrain bytes

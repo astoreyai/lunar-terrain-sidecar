@@ -26,10 +26,11 @@ import {
   LUNAR_RADIUS_M,
 } from '@lts/lunar-dem';
 
-const PGDA_DIR = '/mnt/projects/datasets/lola_5mpp';
-const SITE01 = `${PGDA_DIR}/Site01_final_adj_5mpp_surf.tif`;
+import { SITE01_DEM as SITE01, LDEM_75S_LBL } from './paths.js';
+import { dirname } from 'node:path';
+const PGDA_DIR = dirname(SITE01);
 const SHOEMAKER = `${PGDA_DIR}/Shoemaker_final_adj_5mpp_surf.tif`;
-const LDEM_75S = '/mnt/projects/stewie/data/gis/raw/ldem_75s_120m.lbl';
+const LDEM_75S = LDEM_75S_LBL;
 
 /** Degrees-minutes-seconds string from GDAL → decimal degrees. */
 function dms(d: number, m: number, s: number, negative: boolean): number {

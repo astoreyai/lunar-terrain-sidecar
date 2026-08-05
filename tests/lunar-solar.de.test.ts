@@ -198,6 +198,31 @@ describe.skipIf(!KERNELS_PRESENT)('DE440 kernel reader vs frozen jplephem/CSPICE
   });
 });
 
+describe.skipIf(!KERNELS_PRESENT)('DE-vs-analytic 360-epoch sweep (the paper\'s headline numbers)', () => {
+  it('pins the reproducible sweep: max sub-solar separation below 0.012 deg', () => {
+    // Exactly the `npm run terrain -- de-compare --months 360` sweep the
+    // paper cites: mean-month stepping from 2020-01-01 over 360 epochs.
+    // Measured 2026-08-04: mean 0.0040 deg, max 0.0111 deg. This assertion
+    // pins the headline claim to the suite instead of leaving it as prose
+    // (the frozen-epoch test above gates a looser 0.05 deg bound).
+    const kernels = loadDeKernels();
+    const from = Date.parse('2020-01-01T00:00:00Z');
+    const AVG_MONTH_MS = 30.436875 * 86400_000;
+    let sum = 0;
+    let max = -Infinity;
+    for (let i = 0; i < 360; i++) {
+      const c = compareWithAnalytic(new Date(from + i * AVG_MONTH_MS), kernels);
+      sum += c.separationDeg;
+      if (c.separationDeg > max) max = c.separationDeg;
+    }
+    expect(max).toBeLessThan(0.012);
+    expect(sum / 360).toBeLessThan(0.005);
+    // And the sweep must actually exercise the disagreement, not trivially
+    // pass on a broken comparison that returns zeros.
+    expect(max).toBeGreaterThan(0.005);
+  });
+});
+
 describe.skipIf(!KERNELS_PRESENT)('terrain.getSolar with mode ephemeris_de over the protocol', () => {
   // Unique across ALL test files (vitest runs files in parallel):
   // 8791/93/95/8801/03/05 are taken by other suites and 8796–8799 are held

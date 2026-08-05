@@ -24,7 +24,7 @@ import { buildPermTable } from '../apps/interactive-ui/src/gpuPreview.js';
 const REPO = resolve(__dirname, '..');
 const UI_ROOT = join(REPO, 'apps/interactive-ui');
 const SHOTS = join(REPO, '.test-artifacts/ui');
-const DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { SITE01_DEM as DEM } from './paths.js';
 const SIDECAR_PORT = 8793;
 const UI_PORT = 5199;
 
@@ -691,7 +691,10 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     // The sidecar session outlives the page. A fresh page connecting to a
     // sidecar that already holds terrain must render it without a Generate
     // click — the first-run experience this suite previously never exercised.
-    await page.reload({ waitUntil: 'load' });
+    // 'domcontentloaded', not 'load': under SwiftShader the full load event
+    // can dawdle past 30 s re-initialising WebGL, and the app's own
+    // data-ready attribute below is the gate that actually matters.
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
     await page.fill('#sidecar-url', `ws://127.0.0.1:${SIDECAR_PORT}`);
     await page.click('#btn-connect');

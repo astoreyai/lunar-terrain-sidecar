@@ -22,7 +22,7 @@ import {
   type GenerateResult,
 } from '@lts/terrain-pipeline';
 
-const DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { SITE01_DEM as DEM } from './paths.js';
 const demAvailable = existsSync(DEM);
 
 /** The demonstration site's procedural stack, verbatim — a real stack with a

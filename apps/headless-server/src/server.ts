@@ -91,11 +91,17 @@ interface Session {
   nextSequence: number;
   /** Output directory of the installed dataset's generate; snapshots go under it. */
   outputDirectory?: string;
+  /**
+   * Regolith bulk density from the generating config (`bulkDensityKgM3`,
+   * default 1500): construction-feature mass records use it. Previously a
+   * hard-coded local, which silently ignored the config field.
+   */
+  bulkDensityKgM3: number;
 }
 
 const jobs = new Map<string, JobRecord>();
 const cancelFlags = new Map<string, { aborted: boolean }>();
-const session: Session = { tileSizeSamples: 256, deltas: [], operationLog: [], nextSequence: 0 };
+const session: Session = { tileSizeSamples: 256, deltas: [], operationLog: [], nextSequence: 0, bulkDensityKgM3: 1500 };
 let jobCounter = 0;
 /**
  * Job id of the generate currently running, or null.
@@ -523,7 +529,7 @@ function performOperation(opInput: Partial<TerrainOperation> | undefined) {
   };
   const semanticClass = constructionSemantic[op.kind];
   if (semanticClass !== undefined) {
-    const bulkDensityKgM3 = 1500;
+    const bulkDensityKgM3 = session.bulkDensityKgM3;
     const parameters: ConstructionFeature['parameters'] = {
       centerXMeters: op.centerXMeters,
       centerZMeters: op.centerZMeters,
@@ -712,6 +718,7 @@ async function handle(
             });
             session.dataset = dataset;
             session.tileSizeSamples = config.tileSizeSamples;
+            session.bulkDensityKgM3 = config.bulkDensityKgM3;
             session.deltas = [];
             session.operationLog = [];
             session.nextSequence = 0;

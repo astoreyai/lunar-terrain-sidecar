@@ -33,8 +33,7 @@ import {
 } from '@lts/lunar-dem';
 import { startServer } from '../apps/headless-server/src/server.js';
 
-const LDEM_LBL = '/mnt/projects/stewie/data/gis/raw/ldem_75s_120m.lbl';
-const SITE_DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { LDEM_75S_LBL as LDEM_LBL, SITE01_DEM as SITE_DEM } from './paths.js';
 const SITE = { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 };
 
 const ldemAvailable = existsSync(LDEM_LBL);

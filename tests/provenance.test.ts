@@ -22,7 +22,7 @@ import { stampCrater, makeCrater } from '@lts/lunar-features';
 import { Rng } from '@lts/terrain-core';
 import { generateTerrain } from '@lts/terrain-pipeline';
 
-const DEM = '/mnt/projects/datasets/lola_5mpp/Site01_final_adj_5mpp_surf.tif';
+import { SITE01_DEM as DEM } from './paths.js';
 const MEASURED = ELEVATION_SOURCES.indexOf('measured');
 const MEASURED_PLUS = ELEVATION_SOURCES.indexOf('measured_plus_synthetic');
 
@@ -148,3 +148,24 @@ describe.skipIf(!existsSync(DEM))(
     }, 120_000);
   },
 );
+
+describe('manual solar override provenance (paper Summary claim)', () => {
+  it('labels the model manual_override and records the stated limitation', async () => {
+    const config = parseConfig({
+      terrainId: 'manual_solar_probe',
+      seed: 'manual-solar-probe',
+      outputDirectory: '/tmp/unused-manual-solar',
+      site: { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 },
+      layers: [{ role: 'context', widthMeters: 20, lengthMeters: 20, resolutionMeters: 1 }],
+      craters: { enabled: false },
+      rocks: { enabled: false },
+      solar: { mode: 'manual', elevationDeg: 10, azimuthDeg: 90 },
+    });
+    const { dataset, solar } = await generateTerrain(config, { workerThreads: 1 });
+    expect(solar.model).toBe('manual_override');
+    const limitations = dataset.provenance.limitations.join(' ');
+    expect(limitations).toContain('MANUALLY');
+    expect(limitations).toContain('do not correspond to any real epoch');
+    expect(solar.elevationDeg).toBe(10);
+  });
+});
