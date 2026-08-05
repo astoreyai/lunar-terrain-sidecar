@@ -1,6 +1,6 @@
 {
   "name": "lunar-terrain-sidecar",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Three.js lunar terrain generation, authoring and preprocessing sidecar for a Godot-based lunar robotics simulation.",

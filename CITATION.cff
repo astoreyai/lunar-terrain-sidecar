@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "lunar-terrain-sidecar"
-version: 0.1.0
-date-released: 2026-08-03
+version: 0.1.2
+date-released: 2026-08-05
 license: MIT
 authors:
   - family-names: Storey
