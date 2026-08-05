@@ -14,7 +14,7 @@ extends VBoxContainer
 const SidecarClientScript := preload("res://addons/lunar_terrain/sidecar_client.gd")
 const LoaderScript := preload("res://addons/lunar_terrain/lunar_terrain_loader.gd")
 
-const DEFAULT_URL := "ws://127.0.0.1:8765"
+const DEFAULT_URL := "ws://127.0.0.1:8768"
 const DEFAULT_UI_URL := "http://127.0.0.1:5173"
 
 var client: RefCounted
@@ -216,7 +216,7 @@ func _on_disconnected() -> void:
 func _on_connection_failed(reason: String) -> void:
 	_set_status("unreachable", Color(1.0, 0.36, 0.36))
 	_error(
-		"%s\nStart it with:  npm run serve   (or `lunar-terrain serve --port 8765`)" % reason
+		"%s\nStart it with:  npm run serve   (or `lunar-terrain serve --port 8768`)" % reason
 	)
 	_abort_generation(reason)
 

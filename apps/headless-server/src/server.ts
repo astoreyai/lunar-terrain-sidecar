@@ -1,7 +1,7 @@
 /**
  * The Godot sidecar service (spec §16).
  *
- * JSON-RPC 2.0 over WebSocket on `ws://127.0.0.1:8765` by default. Generation
+ * JSON-RPC 2.0 over WebSocket on `ws://127.0.0.1:8768` by default. Generation
  * runs as a cancellable job with progress notifications; every failure is a
  * structured error carrying a machine-readable code (spec §28).
  *
@@ -1571,7 +1571,7 @@ async function handle(
 }
 
 /** Start the sidecar. Resolves once the server is listening. */
-export async function startServer(port = 8765): Promise<WebSocketServer> {
+export async function startServer(port = 8768): Promise<WebSocketServer> {
   const server = new WebSocketServer({ host: '127.0.0.1', port });
 
   server.on('connection', (socket) => {

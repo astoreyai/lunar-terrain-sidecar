@@ -7,7 +7,7 @@
  */
 
 export const PROTOCOL_VERSION = '1.0.0';
-export const DEFAULT_PORT = 8765;
+export const DEFAULT_PORT = 8768;
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';

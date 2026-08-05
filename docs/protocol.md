@@ -5,7 +5,7 @@ Scope: the JSON-RPC 2.0 WebSocket protocol between the terrain sidecar server an
 ## Transport
 
 - **JSON-RPC 2.0 over WebSocket**, one JSON text frame per request/response/notification.
-- Default endpoint `ws://127.0.0.1:8765` (`DEFAULT_PORT` in `terrain-protocol`; port overridable with `lunar-terrain serve --port N`).
+- Default endpoint `ws://127.0.0.1:8768` (`DEFAULT_PORT` in `terrain-protocol`; port overridable with `lunar-terrain serve --port N`).
 - **Loopback only.** `startServer` (`server.ts`) binds `host: '127.0.0.1'` explicitly. The server reads and writes arbitrary filesystem paths supplied by its client (`terrain.loadConfig`, `terrain.saveConfig`, `terrain.export`, config `outputDirectory`), so exposing it on a routable address would hand out a remote file-read/write primitive. There is no authentication layer; loopback binding *is* the security model.
 - `PROTOCOL_VERSION = '1.0.0'`, `GENERATOR_VERSION = '0.1.0'` (`terrain-protocol/src/index.ts`, `terrain-pipeline/src/generate.ts`).
 

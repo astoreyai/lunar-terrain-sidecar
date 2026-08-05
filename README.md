@@ -11,7 +11,7 @@ authority.
 
 ```
 Godot Simulation
-      │  WebSocket / JSON-RPC 2.0  (ws://127.0.0.1:8765)
+      │  WebSocket / JSON-RPC 2.0  (ws://127.0.0.1:8768)
       ▼
 Terrain Sidecar Server
       ├── terrain-core        seeding, noise, tiling, feasibility

@@ -15,7 +15,7 @@ shell out to the CLI.
 JSON-RPC sidecar:
 
 ```
-             ws://127.0.0.1:8765
+             ws://127.0.0.1:8768
 browser UI ──────────┐
                      ├──► sidecar ──► terrain-pipeline ──► artifacts
 Godot dock ──────────┘     (sole generator)

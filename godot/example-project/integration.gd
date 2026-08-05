@@ -17,7 +17,7 @@ extends SceneTree
 ##
 ## Usage:
 ##   godot --headless --path godot/example-project --script integration.gd -- \
-##         --url ws://127.0.0.1:8765 --config <config.json> --out <result.json>
+##         --url ws://127.0.0.1:8768 --config <config.json> --out <result.json>
 
 const SidecarClientScript := preload("res://addons/lunar_terrain/sidecar_client.gd")
 const LoaderScript := preload("res://addons/lunar_terrain/lunar_terrain_loader.gd")

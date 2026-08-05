@@ -283,7 +283,7 @@ async function cmdDeCompare(argv: string[]): Promise<void> {
 
 async function cmdServe(argv: string[]): Promise<void> {
   const portIdx = argv.indexOf('--port');
-  const port = portIdx >= 0 ? Number(argv[portIdx + 1]) : 8765;
+  const port = portIdx >= 0 ? Number(argv[portIdx + 1]) : 8768;
   const { startServer } = await import('./server.js');
   await startServer(port);
 }
@@ -323,7 +323,7 @@ usage:
   lunar-terrain reproduce <config.json>
   lunar-terrain solar     <latDeg> <lonDeg> [isoUtc] [--sweep <days>]
   lunar-terrain de-compare [--from 2020-01-01] [--months 360]   (needs DE440 kernels)
-  lunar-terrain serve     [--port 8765]
+  lunar-terrain serve     [--port 8768]
 
 coordinates: right-handed, Y-up, +X east, +Z south (north = -Z). metres throughout.`);
         process.exitCode = cmd ? 2 : 0;
