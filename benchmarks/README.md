@@ -84,3 +84,22 @@ touched except the results file.
   rock counts — and the rock-manifest share of their export sizes — are much
   larger than the demo-scale configuration, whose finest layer covers only
   30 m × 30 m. The tables report the counts so this is visible.
+
+## Historical speedups (commit provenance)
+
+The paper's byte-exact optimization claims were measured at their commits,
+each proven byte-identical via `reproduce` against the pre-change export:
+
+| Change | Speedup (measured at commit) | Commit |
+|---|---|---|
+| crater stamping, per-crater hoists | 2.09× on the crater stage | `a681ae3` |
+| base relief, compiled fractal stack | 1.60× on the relief stage | `9107c60` |
+| 8-thread worker pool | 4.84× on the base-relief stage | `466c202` |
+
+A 2026-08-04 re-measurement on the same machine recorded 6.68× for the
+worker pool (thermal/load variance between runs; both numbers are real
+measurements of the same code). End-to-end, the demonstration stack went
+from 16.3 s single-threaded pre-optimization (commit history) to the
+committed `results/2026-08-04-archimedes.json` figure of **3.80 s**
+DEM-grounded. The results JSONs in `results/` are the citable artifacts;
+this table records where the per-change ratios came from.

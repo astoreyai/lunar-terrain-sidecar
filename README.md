@@ -180,7 +180,7 @@ all three tiers, raycast against real collision geometry):
 | probes missed | 0 |
 | max elevation error, on-grid | **9.0e-6 m** |
 | max elevation error, off-grid | 1.0e-2 m (bilinear vs Godot's triangulation) |
-| addon loader read error | 1.8e-15 m |
+| addon loader read error | 2.22e-16 m |
 | collision normals | all `normal_y > 0` (winding correct) |
 
 **Godot addon lifecycle** (`tests/godot-integration.test.ts`, all 21 steps of
@@ -194,11 +194,26 @@ spec §26 against a live sidecar in headless Godot):
 | collision surface after reload | −0.2961 m — followed exactly |
 | editor dock | builds 24 controls, all required actions present |
 
-**Test suite**: 242 tests, 14 files, all passing.
+**Test suite**: 257 tests across 15 files. Suites gated on local data,
+kernels, or a Godot binary **skip loudly** when those are absent — a fresh
+clone without datasets runs the dataset-free majority and reports the rest
+as skipped, never as fake passes.
+
+```bash
+npm test                        # full suite (vitest)
+bash scripts/fetch-data.sh      # fetch public datasets + kernels, then:
+export LTS_SITE01_DEM=...       #   enables DEM-gated suites (UI, Godot,
+export LTS_LDEM_75S=...         #   provenance, parallel, far-horizon)
+export LTS_SPICE_DIR=...        #   enables the DE440 suites
+```
+
+The Godot suites additionally need a Godot 4 editor binary on `LTS_GODOT`
+or PATH. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+workflow.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
-tests/lunar-solar.de.test.ts          11   TS DE440 reader vs frozen JPL reference
+tests/lunar-solar.de.test.ts          12   TS DE440 reader vs frozen JPL reference
 tests/lunar-dem.real-data.test.ts     19   real LOLA products vs GDAL
 tests/lunar-features.test.ts          47   crater/rock models, RNG, estimator
 tests/terramech.test.ts               19   Bekker-Wong vs hand-derived formulas
@@ -207,10 +222,11 @@ tests/construction.test.ts            20   spec-11 features, volumes, mass balan
 tests/history.test.ts                 16   operation log + deterministic replay
 tests/sync.test.ts                     7   sparse deltas + snapshot/restore
 tests/parallel.test.ts                 4   worker-thread byte-identity
-tests/provenance.test.ts               3   per-sample provenance-mask guarantees
+tests/provenance.test.ts               4   per-sample provenance + solar labels
 tests/godot-roundtrip.test.ts         10   headless Godot collision agreement
 tests/godot-integration.test.ts        9   full spec-26 addon lifecycle + dock
-tests/interactive-ui.test.ts          33   real Chromium + WebGL, screenshots
+tests/interactive-ui.test.ts          35   real Chromium + WebGL, screenshots
+tests/far-horizon.test.ts             11   far-field horizon ring (ADR 0006)
 ```
 
 ## Coordinates
@@ -287,7 +303,7 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 ## Citing
 
 If you use this software, please cite it via [`CITATION.cff`](CITATION.cff)
-(Aaron Storey, *lunar-terrain-sidecar*, v0.1.0, MIT). A JOSS software paper
+(Storey, McCardle & Imtiaz, *lunar-terrain-sidecar*, v0.1.2, MIT). A JOSS software paper
 draft is in [`paper/paper.md`](paper/paper.md). Please also credit the data:
 LOLA (Smith et al. 2010), the PGDA polar DEMs (Barker et al. 2021), and JPL
 DE440 (Park et al. 2021).
@@ -304,5 +320,5 @@ godot/      addon/lunar_terrain (loader, sidecar client, editor dock, plugin)
             example-project     (round-trip + integration harnesses)
 examples/   south_pole_site_01
 docs/       decisions/
-tests/      242 tests across 14 files
+tests/      257 tests across 15 files
 ```

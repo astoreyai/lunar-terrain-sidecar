@@ -70,7 +70,7 @@ outside the code being tested (`tests/lunar-solar.ephemeris.test.ts`, 23 tests):
 
 | Invariant | Source of truth | Result |
 |---|---|---|
-| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.57° |
+| Sub-solar latitude confined to ±1.54° | lunar obliquity | max 1.59° |
 | Sub-solar latitude period ≈ 346.6 d | draconic year, not the tropical year — proves the pole actually librates | passes |
 | Sub-solar longitude period = 29.5306 d, **westward** | synodic month, prograde rotation | passes |
 | Solar elevation at −90° = −(sub-solar latitude) | exact geometric identity | agrees to 1e-9° |

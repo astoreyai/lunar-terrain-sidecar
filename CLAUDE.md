@@ -1,13 +1,18 @@
 # lunar-terrain-sidecar — agent handoff
 
-**State (2026-08-04, tag `v0.1.1`):** feature-complete against its 34-section
-engineering spec, JOSS-submission-ready, 244/244 tests across 14 files,
-typecheck clean, demo site reproduces 183/183 artifacts byte-for-byte.
-**No remote** (creating `github.com/astoreyai/lunar-terrain-sidecar` is
-Aaron's pending action; push master + both tags). Since v0.1.0: paper figure
-(`paper/figures/solar-sweep.png`), README media set (`docs/media/`, regenerate
-via `scripts/capture-media.ts` + `scripts/assemble-media.sh`), UI connect-time
-dataset auto-load, and a polar-night viewport banner.
+**State (2026-08-05, tag `v0.1.2`):** feature-complete against its 34-section
+engineering spec, JOSS-submission-ready, 257/257 tests across 15 files,
+typecheck clean, demo site reproduces 183/183 artifacts byte-for-byte, paper
+compiled through the official openjournals/inara toolchain. **No remote**
+(creating `github.com/astoreyai/lunar-terrain-sidecar` is Aaron's pending
+action; push master + tags). Default sidecar port is now **8768** (8765
+belongs to caius). Since v0.1.0: paper figure + README media set
+(`docs/media/`, regenerate via `scripts/capture-media.ts` +
+`scripts/assemble-media.sh`), UI connect-time dataset auto-load, polar-night
+banner, far-field horizon ring (ADR 0006), three-author paper (Storey,
+McCardle, Imtiaz), and a four-lens review mitigation wave (test data paths
+honor `LTS_SITE01_DEM`/`LTS_LDEM_75S` env overrides; DE sweep and
+manual_override provenance pinned in-suite; bulkDensityKgM3 wired through).
 
 Full session history: `/mnt/projects/session_notes/2026-08-03_lunarlandscape_build_and_joss_paper.md`.
 
@@ -48,7 +53,7 @@ Standalone by Aaron's instruction — do **not** couple to STEWIE.
 
 ```bash
 npx tsc --noEmit -p tsconfig.json      # must be clean
-npx vitest run                          # 242/242, 14 files — no skips on this machine
+npx vitest run                          # 257/257, 15 files — no skips on this machine
 npm run terrain -- reproduce examples/south_pole_site_01/config.json   # byte-for-byte
 ```
 
