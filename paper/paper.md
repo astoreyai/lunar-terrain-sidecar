@@ -11,12 +11,21 @@ tags:
   - Godot
   - TypeScript
 authors:
-  - name: Aaron Storey
+  - name: Aaron W. Storey
     orcid: 0009-0009-5560-0015
     affiliation: 1
+  - name: John McCardle
+    affiliation: 2
+  - name: Masudul H. Imtiaz
+    orcid: 0000-0001-5528-482X
+    affiliation: 3
 affiliations:
-  - name: Clarkson University, Potsdam, NY, United States
+  - name: Department of Computer Science, Clarkson University, Potsdam, NY, United States
     index: 1
+  - name: Independent Researcher, United States
+    index: 2
+  - name: Department of Electrical and Computer Engineering, Clarkson University, Potsdam, NY, United States
+    index: 3
 date: 3 August 2026
 bibliography: paper.bib
 ---
@@ -225,6 +234,6 @@ LRO mission [@smith2010lola], the LOLA-adjusted 5 m/px south-polar site DEMs
 of the NASA GSFC Planetary Geodesy Data Archive [@barker2021south], and the
 JPL DE440 planetary and lunar ephemerides [@park2021]. The DE440 reader was
 validated against a frozen reference generated with `jplephem` and CSPICE in
-the author's independently Horizons-checked `ephemkit` oracle environment.
+the first author's independently Horizons-checked `ephemkit` oracle environment.
 
 # References

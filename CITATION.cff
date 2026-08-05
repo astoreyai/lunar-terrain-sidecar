@@ -7,9 +7,17 @@ date-released: 2026-08-05
 license: MIT
 authors:
   - family-names: Storey
-    given-names: Aaron
+    given-names: Aaron W.
     orcid: "https://orcid.org/0009-0009-5560-0015"
     email: storeyaw@clarkson.edu
+    affiliation: "Clarkson University"
+  - family-names: McCardle
+    given-names: John
+    affiliation: "Independent Researcher"
+  - family-names: Imtiaz
+    given-names: Masudul H.
+    orcid: "https://orcid.org/0000-0001-5528-482X"
+    email: mimtiaz@clarkson.edu
     affiliation: "Clarkson University"
 repository-code: "https://github.com/astoreyai/lunar-terrain-sidecar"
 abstract: >-
