@@ -167,6 +167,9 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
         "--enable-unsafe-swiftshader",
         "--disable-gpu-sandbox",
         "--no-sandbox",
+        // CI containers give /dev/shm a few tens of MB; Chromium's renderer
+        // uses it for shared memory and crashes silently when it fills.
+        "--disable-dev-shm-usage",
         // Expose navigator.gpu for the (non-authoritative) GPU preview tests.
         // Verified empirically on this machine (Chrome 151 headless): without
         // the flag navigator.gpu is absent entirely; with it, a plain
@@ -182,6 +185,12 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
     page.on("pageerror", (err) => consoleErrors.push(String(err)));
+    // A crashed renderer otherwise surfaces only as later locators that never
+    // attach; name it in the log so the failure is diagnosable.
+    page.on("crash", () => {
+      consoleErrors.push("page crashed");
+      console.error("[interactive-ui] Chromium page crashed");
+    });
     // Record which resource failed, so a 404 is diagnosable rather than a
     // bare "Failed to load resource".
     page.on("response", (r) => {
@@ -1258,7 +1267,8 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
     // The reloaded page's epoch field is back at its dark default, so the
     // auto-load must ALSO have re-derived the night state honestly.
     expect(await isVisible(page, "#night-banner")).toBe(true);
-  }, 120_000);
+    // The internal waits above already sum past two minutes on a slow runner.
+  }, 400_000);
 });
 
 /**
