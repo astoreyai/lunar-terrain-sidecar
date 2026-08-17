@@ -536,7 +536,7 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
       baseline: { worldStateSha256: state.live.baseline.worldStateSha256 },
     });
     expect(state.live.sequenceNumber).toBeGreaterThan(state.applied);
-  });
+  }, 400_000);
 
   it("cites its real data source in the provenance panel", async () => {
     const text = await page.locator("#insp-provenance").textContent();
@@ -702,6 +702,56 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
     });
     expect(actual).toEqual(expected);
   });
+
+  it("keeps the operator viewpoint across an edit's dataset reload", async () => {
+    // Every edit re-streams the dataset and rebuilds the preview meshes. That
+    // must not throw the operator's orbit camera back to the framing pose —
+    // the site geometry did not change, only its heights.
+    await page.selectOption("#viz-camera", "orbit");
+    const expected = [19, 25, 33];
+    await page.evaluate((position) => {
+      const viewer = (
+        window as unknown as {
+          __lts: {
+            viewer: {
+              camera: { position: { set(x: number, y: number, z: number): void } };
+            };
+          };
+        }
+      ).__lts.viewer;
+      viewer.camera.position.set(position[0], position[1], position[2]);
+    }, expected);
+    await page.evaluate(async () => {
+      const lts = (
+        window as unknown as {
+          __lts: {
+            client: { call<T>(method: string, params?: Record<string, unknown>): Promise<T> };
+            loadDataset(): Promise<void>;
+          };
+        }
+      ).__lts;
+      await lts.client.call("terrain.applyOperation", {
+        operation: {
+          kind: "raise",
+          centerXMeters: 3,
+          centerZMeters: 3,
+          radiusMeters: 1,
+          strengthMeters: 0.01,
+          falloff: 2,
+        },
+      });
+      await lts.loadDataset();
+    });
+    const after = await page.evaluate(() => {
+      const camera = (
+        window as unknown as {
+          __lts: { viewer: { camera: { position: { x: number; y: number; z: number } } } };
+        }
+      ).__lts.viewer.camera.position;
+      return [camera.x, camera.y, camera.z];
+    });
+    expect(after.map((v) => Math.round(v * 1000) / 1000)).toEqual(expected);
+  }, 400_000);
 
   it("switches to the rover-height camera", async () => {
     await page.selectOption("#viz-overlay", "lit");
@@ -942,6 +992,11 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
     const box = (await page.locator("#canvas").boundingBox())!;
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
+    const sequenceBefore = await page.evaluate(
+      () =>
+        (window as unknown as { __lts: { datasetSnapshot?: { sequenceNumber: number } } })
+          .__lts.datasetSnapshot?.sequenceNumber ?? -1,
+    );
     await page.mouse.click(cx, cy);
 
     // semantic_paint moves no height, so the delta reports zero volumes —
@@ -949,11 +1004,23 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
     await waitForText(page, "#edit-status", "delta-", 120_000);
     expect(await textOf(page, "#edit-status")).toMatch(/delta-\d+/);
 
+    // The edit triggers a full dataset re-stream; while the preview meshes are
+    // being rebuilt the pointer has nothing to hit, so wait until the new
+    // world (sequence advanced) is installed before probing. On a two-core CI
+    // runner with software GL that re-stream takes tens of seconds.
+    await page.waitForFunction(
+      (before) =>
+        ((window as unknown as { __lts: { datasetSnapshot?: { sequenceNumber: number } } })
+          .__lts.datasetSnapshot?.sequenceNumber ?? -1) > before,
+      sequenceBefore,
+      { timeout: 300_000 },
+    );
+
     // Hover the painted spot: the inspector's semantic readout comes from the
     // authoritative terrain.getSemanticClass, not the preview mesh. Point
     // queries are throttled (one in flight), so nudge the pointer until the
     // readout lands.
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 60_000;
     let semantic = "";
     while (Date.now() < deadline) {
       await page.mouse.move(cx + 40, cy + 40);
@@ -963,7 +1030,7 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
       if (semantic === "compacted_surface") break;
     }
     expect(semantic).toBe("compacted_surface");
-  }, 200_000);
+  }, 400_000);
 
   it("lists the operation history including the semantic paint", async () => {
     await page.click("#btn-history-refresh");

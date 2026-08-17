@@ -213,9 +213,24 @@ export class Viewer {
     this.ambient.intensity = intensity;
   }
 
+  /**
+   * Identity of the installed layer *geometry* (ids, bounds, spacing) — the
+   * part of a dataset that decides how the site should be framed. Heights and
+   * masks change with every edit; those reloads must not move the camera.
+   */
+  private layerGeometrySignature = "";
+
   /** Replace the terrain with a new set of layers. */
   setLayers(layers: LayerGeometry[]): void {
     this.layers = layers;
+    const signature = layers
+      .map(
+        (l) =>
+          `${l.id}:${l.minX}:${l.minZ}:${l.widthSamples}:${l.heightSamples}:${l.resolutionMeters}`,
+      )
+      .join('|');
+    const geometryChanged = signature !== this.layerGeometrySignature;
+    this.layerGeometrySignature = signature;
     // Fresh sidecar data supersedes any preview: revert before rebuilding.
     this.restorePreview();
     Viewer.disposeGroup(this.terrainGroup);
@@ -231,7 +246,10 @@ export class Viewer {
     this.siteExtentM = extent;
     this.updateOrthographicFrustum();
     this.helpersDirty = true;
-    this.positionCameraForMode(this.cameraMode);
+    // Re-frame only when the site geometry changed (first load, a new
+    // generate, another sidecar dataset). An edit's re-stream keeps the
+    // operator's viewpoint.
+    if (geometryChanged) this.positionCameraForMode(this.cameraMode);
   }
 
   /**

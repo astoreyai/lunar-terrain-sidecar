@@ -28,6 +28,19 @@ import { DELTA_WINDOW } from "@lts/terrain-protocol";
 import { SITE01_DEM } from "./paths.js";
 
 const PORT = 8818;
+// The shipped demonstration site's crater model, so generated craters carry
+// the real production_csfd provenance and per-layer id scheme.
+const PRODUCTION_CSFD_CRATERS = {
+  enabled: true,
+  model: "production_csfd",
+  minimumDiameterMeters: 0.2,
+  maximumDiameterMeters: 35,
+  surfaceAgeGyr: 3.5,
+  meanDegradation: 0.45,
+  degradationSpread: 0.3,
+  ellipticalFraction: 0.15,
+  clustering: 0,
+};
 const WORK = resolve(__dirname, "../.test-artifacts/snapshot-state");
 const available = existsSync(SITE01_DEM);
 
@@ -1008,47 +1021,24 @@ describe("complete snapshot state on the real Site01 DEM", () => {
   }, 120_000);
 
   it("rejects independently invalid crater domains from a re-hashed snapshot", async () => {
-    await generate({ outputDirectory: join(WORK, "crater-state-validation") });
+    // Generate real production-CSFD craters on the Site01 crop and use one of
+    // them, provenance-labelled by the generator itself, as the template rather
+    // than inventing test geometry or reading a machine-local export. The
+    // adversarial mutation below changes exactly one scientific domain at a time.
+    await generate({
+      outputDirectory: join(WORK, "crater-state-validation"),
+      craters: PRODUCTION_CSFD_CRATERS,
+    });
     const snapshot = (await rpc("terrain.snapshot")).result;
     const statePath = join(snapshot.directory, snapshot.stateFile);
     const manifestPath = join(snapshot.directory, "snapshot.json");
     const originalState = JSON.parse(readFileSync(statePath, "utf8"));
     const originalManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-
-    // Use one shipped, provenance-labelled production-CSFD crater rather than
-    // inventing test geometry. The adversarial mutation below changes exactly
-    // one of its scientific domains at a time.
-    const craterArtifact = JSON.parse(
-      readFileSync(
-        resolve(
-          __dirname,
-          "../examples/south_pole_site_01/generated/south_pole_site_01/craters.json",
-        ),
-        "utf8",
-      ),
-    ).craters[0];
-    expect(craterArtifact.origin).toBe("production_csfd");
-    const {
-      layers,
-      id,
-      origin,
-      centerXMeters,
-      centerZMeters,
-      ...parameters
-    } = craterArtifact;
-    const crater = {
-      id,
-      kind: "crater",
-      appliedToLayers: layers,
-      affectedBounds: {
-        minX: centerXMeters - parameters.ejectaExtentMeters,
-        minZ: centerZMeters - parameters.ejectaExtentMeters,
-        maxX: centerXMeters + parameters.ejectaExtentMeters,
-        maxZ: centerZMeters + parameters.ejectaExtentMeters,
-      },
-      parameters: { centerXMeters, centerZMeters, ...parameters },
-      origin,
-    };
+    const crater = originalState.featureManifest.find(
+      (feature: any) => feature.kind === "crater",
+    );
+    expect(crater).toBeDefined();
+    expect(crater.origin).toBe("production_csfd");
 
     const corruptions: Array<{
       name: string;
@@ -1663,17 +1653,7 @@ describe("complete snapshot state on the real Site01 DEM", () => {
         { role: "context", widthMeters: 80, lengthMeters: 80, resolutionMeters: 1 },
         { role: "operational", widthMeters: 20, lengthMeters: 20, resolutionMeters: 0.1 },
       ],
-      craters: {
-        enabled: true,
-        model: "production_csfd",
-        minimumDiameterMeters: 0.2,
-        maximumDiameterMeters: 35,
-        surfaceAgeGyr: 3.5,
-        meanDegradation: 0.45,
-        degradationSpread: 0.3,
-        ellipticalFraction: 0.15,
-        clustering: 0,
-      },
+      craters: PRODUCTION_CSFD_CRATERS,
     });
     const dataset = (await rpc("terrain.getDataset")).result;
     expect(dataset.layers).toHaveLength(2);

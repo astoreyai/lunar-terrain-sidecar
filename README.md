@@ -235,7 +235,7 @@ A separate full shipped-Site01 acceptance persisted a 67,370,056-byte
 931 physical rocks = 931 collision shapes in 9 bodies; the origin raycast error
 was 6.52e-7 m.
 
-**Test suite**: 345 tests across 17 files. The two required CI jobs cover all
+**Test suite**: 346 tests across 17 files. The two required CI jobs cover all
 17 files and reject any skipped, pending, or disabled test in their machine-readable
 Vitest reports. The real-data job fetches and verifies every NASA/PGDA/PDS/JPL
 source plus the official Godot editor and Linux export template before running.
@@ -251,7 +251,7 @@ export LTS_SPICE_DIR="$PWD/data/spice_kernels"
 
 The Godot suites additionally need a Godot 4 editor binary on `LTS_GODOT`
 or PATH. Hosted CI provisions the exact pinned prerequisites and requires the
-full 345-test matrix; it does not accept a missing-data skip as success.
+full 346-test matrix; it does not accept a missing-data skip as success.
 `examples/south_pole_site_01/expected-checksums.sha256` is the committed oracle
 for the 183-artifact reproduce gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for
 the development workflow.
@@ -379,5 +379,5 @@ godot/      addon/lunar_terrain (loader, sidecar client, editor dock, plugin)
             example-project     (round-trip + integration harnesses)
 examples/   south_pole_site_01
 docs/       decisions/
-tests/      345 tests across 17 files
+tests/      346 tests across 17 files
 ```

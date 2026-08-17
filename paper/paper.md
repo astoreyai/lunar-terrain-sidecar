@@ -120,7 +120,7 @@ Project Chrono [@tasora2016].
 
 # Validation and reproducibility
 
-The v0.2.0 release-candidate matrix comprises 345 tests across 17 files and validates against an authority outside the code wherever one exists. On the fully provisioned reference machine, release acceptance requires every test to pass with none skipped, pending, or disabled. Resource-gated suites fail acceptance when a required input is absent; `scripts/fetch-data.sh` retrieves checksum-pinned public inputs.
+The v0.2.0 release-candidate matrix comprises 346 tests across 17 files and validates against an authority outside the code wherever one exists. On the fully provisioned reference machine, release acceptance requires every test to pass with none skipped, pending, or disabled. Resource-gated suites fail acceptance when a required input is absent; `scripts/fetch-data.sh` retrieves checksum-pinned public inputs.
 
 **Ephemeris versus physical invariants.** The analytic solar chain is
 tested against nine independent properties of the Earth-Moon-Sun system
