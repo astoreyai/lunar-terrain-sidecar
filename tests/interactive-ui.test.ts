@@ -181,6 +181,10 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
       ],
     });
     page = await browser.newPage({ viewport: { width: 1600, height: 950 } });
+    // Playwright trace (screenshots + actions, no DOM snapshots) so a stall on
+    // a machine we cannot reproduce on — a CI runner — leaves evidence in
+    // .test-artifacts/ui/trace.zip instead of a bare timeout.
+    await page.context().tracing.start({ screenshots: true, snapshots: false });
     page.on("console", (msg) => {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
@@ -206,6 +210,11 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
   }, 300_000);
 
   afterAll(async () => {
+    try {
+      await page?.context().tracing.stop({ path: join(SHOTS, "trace.zip") });
+    } catch (e) {
+      console.error(`[interactive-ui] trace not written: ${(e as Error).message}`);
+    }
     await page?.close();
     await browser?.close();
     await vite?.close();
@@ -711,6 +720,43 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
     });
     expect(actual).toEqual(expected);
   });
+
+  it("picks the surface under the pointer without a per-event mesh raycast", async () => {
+    // Every pointer move maps the cursor to terrain coordinates. The preview
+    // holds ~1.5 M triangles, so a brute-force mesh raycast per event stalls
+    // the page main thread on a slow machine (a CI runner froze for minutes
+    // under a single mouse sweep). The pick must be an analytic heightfield
+    // intersection: consistent with the layer heights and cheap.
+    const result = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: {
+            viewer: {
+              pick(x: number, y: number): { x: number; y: number; z: number } | null;
+              surfaceHeightAt(x: number, z: number): number;
+            };
+          };
+        }
+      ).__lts.viewer;
+      let hits = 0;
+      let maxDeviation = 0;
+      const t0 = performance.now();
+      for (let i = 0; i < 200; i++) {
+        const nx = -0.6 + (1.2 * (i % 20)) / 19;
+        const ny = -0.6 + (1.2 * Math.floor(i / 20)) / 9;
+        const p = viewer.pick(nx, ny);
+        if (!p) continue;
+        hits++;
+        maxDeviation = Math.max(maxDeviation, Math.abs(p.y - viewer.surfaceHeightAt(p.x, p.z)));
+      }
+      return { hits, maxDeviation, elapsedMs: performance.now() - t0 };
+    });
+    expect(result.hits).toBeGreaterThan(100);
+    expect(result.maxDeviation).toBeLessThan(0.05);
+    // 25 ms per pick would already be a sluggish hover; the bound is 100× the
+    // analytic cost so only a mesh raycast can trip it.
+    expect(result.elapsedMs).toBeLessThan(5_000);
+  }, 400_000);
 
   it("keeps the operator viewpoint across an edit's dataset reload", async () => {
     // Every edit re-streams the dataset and rebuilds the preview meshes. That

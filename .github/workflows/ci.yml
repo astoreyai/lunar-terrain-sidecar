@@ -250,6 +250,17 @@ jobs:
             console.log("Godot real-data gate passed " + report.numPassedTests + " tests with zero skips");
           '
 
+      - name: Upload browser trace and screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: interactive-ui-evidence
+          path: |
+            .test-artifacts/ui/
+            .test-artifacts/godot-real-vitest.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Reproduce all 183 committed Site01 artifacts byte-for-byte
         shell: bash
         run: |

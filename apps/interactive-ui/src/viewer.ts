@@ -682,12 +682,91 @@ export class Viewer {
     return this.previewGroup.children.length > 0;
   }
 
-  /** Ray-pick the terrain under a normalised device coordinate. */
+  /**
+   * Pick the terrain under a normalised device coordinate.
+   *
+   * Analytic heightfield intersection against the finest covering layer
+   * (`surfaceHeightAt`), not a mesh raycast: the preview holds ~1.5 M
+   * triangles and a per-pointer-event `Raycaster.intersectObjects` stalled the
+   * page main thread for tens of seconds on a two-core machine. The march
+   * also picks the same surface the inspector queries — a mesh raycast could
+   * land on a coarser overlapping layer several metres off the finest one.
+   */
   pick(ndcX: number, ndcY: number): THREE.Vector3 | null {
+    if (this.layers.length === 0) return null;
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
-    const hits = raycaster.intersectObjects(this.terrainGroup.children, false);
-    return hits.length > 0 ? hits[0].point : null;
+    const origin = raycaster.ray.origin;
+    const dir = raycaster.ray.direction;
+
+    // Site footprint and the finest sample spacing decide the march.
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    let finest = Infinity;
+    for (const layer of this.layers) {
+      minX = Math.min(minX, layer.minX);
+      minZ = Math.min(minZ, layer.minZ);
+      maxX = Math.max(maxX, layer.minX + (layer.widthSamples - 1) * layer.resolutionMeters);
+      maxZ = Math.max(maxZ, layer.minZ + (layer.heightSamples - 1) * layer.resolutionMeters);
+      finest = Math.min(finest, layer.resolutionMeters);
+    }
+    // Slab test: the parameter range where the ray is over the footprint.
+    let tEnter = 0;
+    let tExit = Infinity;
+    for (const [o, d, lo, hi] of [
+      [origin.x, dir.x, minX, maxX],
+      [origin.z, dir.z, minZ, maxZ],
+    ] as const) {
+      if (Math.abs(d) < 1e-12) {
+        if (o < lo || o > hi) return null;
+        continue;
+      }
+      const t0 = (lo - o) / d;
+      const t1 = (hi - o) / d;
+      tEnter = Math.max(tEnter, Math.min(t0, t1));
+      tExit = Math.min(tExit, Math.max(t0, t1));
+    }
+    if (!(tExit > tEnter)) return null;
+
+    const above = (t: number): number =>
+      origin.y + t * dir.y - this.surfaceHeightAt(origin.x + t * dir.x, origin.z + t * dir.z);
+    // Step small enough not to skip a sample cell of the finest layer along
+    // the ray, bounded so a kilometre-scale site stays a few thousand steps.
+    const horizontal = Math.hypot(dir.x, dir.z);
+    const step = Math.max(
+      (horizontal > 1e-9 ? finest / horizontal : Infinity),
+      (tExit - tEnter) / 4096,
+    );
+    let tPrev = tEnter;
+    let hPrev = above(tPrev);
+    if (hPrev <= 0) return null; // Ray starts under the surface: nothing to pick.
+    for (let t = tEnter + step; t <= tExit + step; t += step) {
+      const tc = Math.min(t, tExit);
+      const h = above(tc);
+      if (h <= 0) {
+        // Bisect the crossing to sub-millimetre precision.
+        let lo = tPrev;
+        let hi = tc;
+        for (let i = 0; i < 24; i++) {
+          const mid = 0.5 * (lo + hi);
+          if (above(mid) > 0) lo = mid;
+          else hi = mid;
+        }
+        const tHit = 0.5 * (lo + hi);
+        const x = origin.x + tHit * dir.x;
+        const z = origin.z + tHit * dir.z;
+        // Report the authoritative surface at the picked (x, z): where nested
+        // layers meet, the finest-layer height can step by up to a metre and
+        // the crossing itself lands on that step.
+        return new THREE.Vector3(x, this.surfaceHeightAt(x, z), z);
+      }
+      tPrev = tc;
+      hPrev = h;
+      if (tc >= tExit) break;
+    }
+    return null;
   }
 
   render(): void {
