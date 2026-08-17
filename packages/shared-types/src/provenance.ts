@@ -14,6 +14,16 @@ export interface GeneratorIdentity {
   schemaVersion: string;
 }
 
+/** One physical file contributing to a multi-file source product. */
+export interface DataSourceFile {
+  /** Function of this file within the source product. */
+  role: 'label' | 'raster';
+  /** Path read by the generator. */
+  path: string;
+  /** SHA-256 of this file's bytes. */
+  sha256: string;
+}
+
 /** A real dataset that contributed measured elevations. */
 export interface DataSource {
   /** Short identifier used in manifests, e.g. `LDEM_75S_120M`. */
@@ -31,8 +41,14 @@ export interface DataSource {
    * grid spacing. Synthetic detail is only injected below this scale.
    */
   effectiveResolutionMeters?: number;
-  /** SHA-256 of the source file, so a stale input is detectable. */
+  /** SHA-256 of a single-file source, so a stale input is detectable. */
   sha256?: string;
+  /**
+   * Separately hashed contributors when the source is a multi-file product.
+   * Detached PDS products use this instead of claiming one digest covers both
+   * the label (georeferencing/scaling) and the image (elevation samples).
+   */
+  files?: DataSourceFile[];
 }
 
 /**

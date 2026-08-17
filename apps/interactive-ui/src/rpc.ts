@@ -18,7 +18,7 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
  * with silently wrong message shapes. Major-version disagreement therefore
  * closes the connection.
  */
-export const CLIENT_PROTOCOL_MAJOR = 1;
+export const CLIENT_PROTOCOL_MAJOR = 2;
 
 export interface ProgressEvent {
   jobId: string;

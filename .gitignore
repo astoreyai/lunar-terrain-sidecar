@@ -6,3 +6,5 @@ generated/
 paper/paper.pdf
 paper/jats/
 CLAUDE.md
+# Agent handoff notes carry machine-local paths and personal context; keep local.
+AGENTS.md

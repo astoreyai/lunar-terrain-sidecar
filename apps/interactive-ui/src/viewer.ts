@@ -97,6 +97,9 @@ export class Viewer {
   overlayMode: OverlayMode = 'lit';
   wireframe = false;
   siteExtentM = 100;
+  private helperOptionsKey = '';
+  private helpersDirty = true;
+  private viewportAspect = 1;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -156,12 +159,18 @@ export class Viewer {
 
   setSize(width: number, height: number): void {
     this.renderer.setSize(width, height, false);
-    this.perspective.aspect = width / Math.max(1, height);
+    this.viewportAspect = width / Math.max(1, height);
+    this.perspective.aspect = this.viewportAspect;
     this.perspective.updateProjectionMatrix();
-    const half = this.siteExtentM / 2;
-    const aspect = width / Math.max(1, height);
-    this.ortho.left = -half * aspect;
-    this.ortho.right = half * aspect;
+    this.updateOrthographicFrustum();
+  }
+
+  private updateOrthographicFrustum(): void {
+    // Five percent breathing room keeps the outer boundary visible instead of
+    // placing it exactly on the viewport edge.
+    const half = this.siteExtentM * 0.525;
+    this.ortho.left = -half * this.viewportAspect;
+    this.ortho.right = half * this.viewportAspect;
     this.ortho.top = half;
     this.ortho.bottom = -half;
     this.ortho.updateProjectionMatrix();
@@ -191,6 +200,11 @@ export class Viewer {
     cam.updateProjectionMatrix();
   }
 
+  /** Remove direct illumination when no authoritative solar solution exists. */
+  clearSolar(): void {
+    this.sun.intensity = 0.0;
+  }
+
   setEarthshine(enabled: boolean): void {
     this.earthLight.intensity = enabled ? 0.05 : 0.0;
   }
@@ -215,9 +229,9 @@ export class Viewer {
       this.terrainGroup.add(mesh);
     }
     this.siteExtentM = extent;
-
-    this.controls.target.set(0, 0, 0);
-    this.frameSite();
+    this.updateOrthographicFrustum();
+    this.helpersDirty = true;
+    this.positionCameraForMode(this.cameraMode);
   }
 
   /**
@@ -322,6 +336,7 @@ export class Viewer {
   }
 
   setOverlay(mode: OverlayMode): void {
+    if (mode === this.overlayMode) return;
     const wasLit = this.overlayMode === 'lit';
     this.overlayMode = mode;
     if (wasLit !== (mode === 'lit')) {
@@ -365,6 +380,7 @@ export class Viewer {
   }
 
   setWireframe(on: boolean): void {
+    if (on === this.wireframe) return;
     this.wireframe = on;
     for (const mesh of this.meshes.values()) {
       const m = mesh.material as THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
@@ -385,10 +401,10 @@ export class Viewer {
     Viewer.disposeGroup(this.rockGroup);
     if (rocks.length === 0) return;
 
-    const geometry = new THREE.IcosahedronGeometry(1, 1);
     for (const physical of [true, false]) {
       const subset = rocks.filter((r) => r.physical === physical);
       if (subset.length === 0) continue;
+      const geometry = new THREE.IcosahedronGeometry(1, 1);
       const material = new THREE.MeshStandardMaterial({
         color: physical ? 0x2a2724 : 0x24211e,
         roughness: 0.95,
@@ -423,6 +439,8 @@ export class Viewer {
 
   /** Grid, layer boundaries and contour lines (spec §13). */
   setHelpers(options: { grid: boolean; tileBounds: boolean; contours: boolean }): void {
+    const key = `${Number(options.grid)}:${Number(options.tileBounds)}:${Number(options.contours)}`;
+    if (!this.helpersDirty && key === this.helperOptionsKey) return;
     Viewer.disposeGroup(this.helperGroup);
 
     if (options.grid) {
@@ -452,6 +470,8 @@ export class Viewer {
     }
 
     if (options.contours) this.buildContours();
+    this.helperOptionsKey = key;
+    this.helpersDirty = false;
   }
 
   /** Contour lines by marching-squares on the coarsest layer. */
@@ -518,7 +538,12 @@ export class Viewer {
   }
 
   setCameraMode(mode: CameraMode): void {
+    if (mode === this.cameraMode) return;
     this.cameraMode = mode;
+    this.positionCameraForMode(mode);
+  }
+
+  private positionCameraForMode(mode: CameraMode): void {
     const extent = this.siteExtentM;
     switch (mode) {
       case 'topdown':

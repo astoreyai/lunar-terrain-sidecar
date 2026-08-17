@@ -32,9 +32,14 @@ CPU generation is no longer single-threaded, though: the `base_relief` and `rego
 
 No SDF or voxel patches; a heightfield cannot represent overhangs or undersides. Declared in `terrain.capabilities` → `notImplemented.volumetricTerrain`. This is also why rocks are instances rather than terrain (`packages/lunar-features/src/rocks.ts` header) — see [terrain-model.md](terrain-model.md).
 
-## Off-grid collision agreement is ~1 cm
+## Off-grid collision agreement is ~0.12 mm in the fixed probe set
 
-Godot triangulates each heightfield cell into two flat triangles while the sidecar interpolates bilinearly, so elevations *between* grid samples disagree by up to ~1.0e-2 m (measured, `tests/godot-roundtrip.test.ts`, README "Measured results"). On-grid agreement is 9.0e-6 m. The 1 cm figure is a property of the two interpolation schemes, not a bug to fix on either side.
+Godot triangulates each heightfield cell into two flat triangles while the
+sidecar interpolates bilinearly, so elevations *between* grid samples are not
+mathematically identical. The fixed real-data probe set in
+`tests/godot-roundtrip.test.ts` currently measures a 1.15406e-4 m maximum;
+on-grid agreement is 8.70159e-6 m. These are acceptance measurements for the
+shipped probe set, not universal error bounds for arbitrary terrain curvature.
 
 ## Little-endian loader assumption in the Godot addon
 
@@ -47,6 +52,25 @@ The sidecar holds exactly one session with one dataset (`Session` in `apps/headl
 ## Rock count estimates are background expectations, not bounds
 
 `estimate` reports the calibrated Golombek **background** population. The generator then *adds* rim-excess rocks per crater ((enhancement − 1) × background density over each rim annulus) and subtracts slope rejections — both depend on the crater population and terrain not yet generated, so the realised count can substantially exceed the estimate: measured ~2.2× on the shipped demonstration site (`packages/terrain-core/src/estimate.ts` documents the same; an earlier revision mislabelled this an "upper bound", which the demo itself falsified).
+
+## Godot rock transfer is capped at 50,000 instances
+
+`terrain.getRocks` and the Godot loader cap a transfer/import at 50,000 model
+instances (`MAX_ROCKS` / `MAX_ROCK_INSTANCES`). The sidecar allocates that
+budget to collision-bearing physical rocks first and exposes `truncated`, while
+live sync refuses a truncated baseline instead of silently accepting incomplete
+collision. Generation and export can legitimately produce more rocks for other
+consumers. Paging is not implemented, so a >50,000-rock world is not currently
+exportable to the shipped Godot addon as one complete scene.
+
+## Loopback is not multi-user authentication
+
+The sidecar binds only to `127.0.0.1` and rejects browser origins that are not
+loopback, but it has no bearer-token layer and accepts native clients that send
+no HTTP `Origin`. Because several RPCs read or write client-selected filesystem
+paths, the supported deployment boundary is one trusted OS account on a host
+whose other local processes are also trusted. Loopback prevents remote-network
+access; it does not isolate another local user. See [protocol.md](protocol.md).
 
 ## Further declared limitations
 

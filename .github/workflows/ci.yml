@@ -1,21 +1,18 @@
 # CI for lunar-terrain-sidecar.
 #
-# The core job runs everything that needs no local datasets, no Godot and no
-# Chromium: typecheck plus the test files verified (by running the suite with
-# the dataset directories masked) to pass without
-# /mnt/projects/datasets/{spice_kernels,lola_5mpp} present.
+# The core job runs only suites that need no local datasets, Godot, or
+# Chromium. Its machine-readable result guard rejects skipped, pending, and
+# disabled tests and requires exactly the listed test files to have run, so a
+# deleted or renamed suite fails just like a skipped one; missing prerequisites
+# can never look like passing evidence.
 #
-#   - lunar-features, protocol, construction, history, sync,
-#     lunar-solar.ephemeris: fully dataset-free. The one protocol test that
-#     needs a real DEM (the concurrency race window) skips itself when the
-#     DEM is absent.
-#   - lunar-solar.de, lunar-dem.real-data, far-horizon: gated on kernel/DEM
-#     presence with describe.skipIf — included here deliberately so the skip
-#     path (skip loudly, never fake-pass) is exercised in CI. far-horizon's
-#     analytic-geometry block is dataset-free and runs everywhere.
-#
-# To run the gated suites for real, fetch the public data first:
-#   bash scripts/fetch-data.sh   (see the script for env/config pointers)
+# The required godot-real job downloads the exact NASA/PGDA DEMs, PDS LOLA
+# grid, JPL kernels, and official Godot editor/template artifacts, verifies
+# every SHA-256, and runs every remaining test file: protocol concurrency,
+# construction atomicity, provenance, ephemeris, terramechanics, snapshot/sync,
+# browser UI, import, live integration, save/reopen, Linux export/launch,
+# collision raycast, and the 183-artifact reproduce gate. Caches reduce repeat
+# downloads but are never trusted without re-verification.
 
 name: CI
 
@@ -23,20 +20,23 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   core:
     name: typecheck + dataset-free tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 9
+          version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 26.7.0
           cache: pnpm
 
       - name: Install dependencies
@@ -45,54 +45,232 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Tests (no local datasets, no Godot, no Chromium)
-        run: >-
-          npx vitest run
-          tests/lunar-features.test.ts
-          tests/protocol.test.ts
-          tests/construction.test.ts
-          tests/history.test.ts
-          tests/sync.test.ts
-          tests/lunar-solar.ephemeris.test.ts
-          tests/lunar-solar.de.test.ts
-          tests/lunar-dem.real-data.test.ts
-          tests/far-horizon.test.ts
+      - name: Tests (no local datasets, no Godot, no Chromium; zero skips)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .test-artifacts
+          npx vitest run \
+            tests/lunar-features.test.ts \
+            tests/history.test.ts \
+            tests/lunar-solar.ephemeris.test.ts \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json=.test-artifacts/core-vitest.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const report = JSON.parse(readFileSync(".test-artifacts/core-vitest.json", "utf8"));
+            const expectedFiles = [
+              "tests/lunar-features.test.ts",
+              "tests/history.test.ts",
+              "tests/lunar-solar.ephemeris.test.ts",
+            ];
+            const ranFiles = report.testResults.map((suite) => suite.name.replace(/^.*\/tests\//, "tests/")).sort();
+            const clean = report.success
+              && report.numFailedTestSuites === 0
+              && report.numPendingTestSuites === 0
+              && report.numFailedTests === 0
+              && report.numPendingTests === 0
+              && report.numTodoTests === 0
+              && report.numPassedTestSuites === report.numTotalTestSuites
+              && report.numPassedTests === report.numTotalTests
+              && report.numPassedTests > 0
+              && JSON.stringify(ranFiles) === JSON.stringify([...expectedFiles].sort());
+            if (!clean) {
+              console.error("Dataset-free gate did not run every selected test file", { ranFiles, expectedFiles }, report);
+              process.exit(1);
+            }
+            console.log("Dataset-free gate passed " + report.numPassedTests + " tests with zero skips");
+          '
 
-  # These suites need what a hosted runner does not have:
-  #   - interactive-ui.test.ts: real Chromium (playwright) + WebGL, and the
-  #     PGDA Site01 DEM on disk;
-  #   - godot-roundtrip.test.ts / godot-integration.test.ts: a Godot 4
-  #     editor binary on PATH plus the same DEM;
-  #   - parallel.test.ts: passes without the DEM but its DEM-grounded
-  #     byte-identity case skips.
-  # They are kept as a visible, optional job (continue-on-error) rather than
-  # silently omitted, so the requirement is documented where CI lives.
-  heavy-optional:
-    name: UI + Godot suites (needs DEM, Godot, Chromium — expected to skip/fail on hosted runners)
+  godot-real:
+    name: Godot 4.6.3 + real Site01 release acceptance
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 60
+    env:
+      LTS_SITE01_DEM: ${{ github.workspace }}/data/lola_5mpp/Site01_final_adj_5mpp_surf.tif
+      LTS_LDEM_75S: ${{ github.workspace }}/data/lola_ldem/ldem_75s_120m.lbl
+      LTS_SPICE_DIR: ${{ github.workspace }}/data/spice_kernels
+      LTS_GODOT: ${{ github.workspace }}/.ci-tools/godot/Godot_v4.6.3-stable_linux.x86_64
+      XDG_DATA_HOME: ${{ github.workspace }}/.ci-data
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 9
+          version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 26.7.0
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium for playwright
+      - name: Install Chromium for real browser acceptance
         run: npx playwright install --with-deps chromium
 
-      - name: UI + Godot + parallel suites
-        run: >-
-          npx vitest run
-          tests/parallel.test.ts
-          tests/interactive-ui.test.ts
-          tests/godot-roundtrip.test.ts
-          tests/godot-integration.test.ts
+      - name: Restore checksum-pinned NASA and JPL source data
+        id: source-data-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            data/lola_5mpp
+            data/lola_ldem
+            data/spice_kernels
+          key: lunar-source-data-v1-3ba7b97c-75329262-ae3afc3c-5c59b16e-c1c7feea-60cd55aa-a47c71e9
+
+      - name: Fetch and verify every required NASA and JPL source file
+        shell: bash
+        run: bash scripts/fetch-data.sh data
+
+      - name: Restore pinned official Godot editor
+        id: godot-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ci-tools/godot/Godot_v4.6.3-stable_linux.x86_64
+          key: godot-editor-4.6.3-f64d4ed19fc9df9440321653fcc80df8c6e365ba7b6de0a29e2cfa9fa71bfeb3
+
+      - name: Download official Godot editor
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/Godot_v4.6.3-stable_linux.x86_64.zip"
+          mkdir -p "$(dirname "$LTS_GODOT")"
+          curl -fL --retry 3 --retry-all-errors \
+            -o "$archive" \
+            https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+          echo "d0bc2113065e481c9c2c2b2c37daa4e8be3fe9e27f0ab9ab0b6096e9a37907f3  $archive" \
+            | sha256sum -c -
+          unzip -q "$archive" -d "$(dirname "$LTS_GODOT")"
+
+      - name: Verify official Godot editor
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "$LTS_GODOT"
+          echo "f64d4ed19fc9df9440321653fcc80df8c6e365ba7b6de0a29e2cfa9fa71bfeb3  $LTS_GODOT" \
+            | sha256sum -c -
+          test "$($LTS_GODOT --version)" = "4.6.3.stable.official.7d41c59c4"
+
+      - name: Restore official Linux export template
+        id: templates-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ci-data/godot/export_templates/4.6.3.stable
+          key: godot-linux-release-template-4.6.3-2c78919325d7f29fa7607287c7c1eeac367ea4c94e7b8b6f5f4c6b20492f73d0
+
+      - name: Download official Godot export templates
+        if: steps.templates-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/Godot_v4.6.3-stable_export_templates.tpz"
+          target="$XDG_DATA_HOME/godot/export_templates/4.6.3.stable"
+          mkdir -p "$target"
+          curl -fL --retry 3 --retry-all-errors \
+            -o "$archive" \
+            https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_export_templates.tpz
+          echo "3fbe2c0e2dec9d537ab9ec97bcf8da91dcf23357fc51f67092dd068d839290a8  $archive" \
+            | sha256sum -c -
+          unzip -q -j "$archive" \
+            templates/linux_release.x86_64 templates/version.txt \
+            -d "$target"
+
+      - name: Verify official Linux export template
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$XDG_DATA_HOME/godot/export_templates/4.6.3.stable"
+          test "$(cat "$target/version.txt")" = "4.6.3.stable"
+          echo "2c78919325d7f29fa7607287c7c1eeac367ea4c94e7b8b6f5f4c6b20492f73d0  $target/linux_release.x86_64" \
+            | sha256sum -c -
+
+      - name: Real-data protocol, UI, sync, Godot import, export, launch, and raycast
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .test-artifacts
+          npx vitest run \
+            tests/protocol.test.ts \
+            tests/construction.test.ts \
+            tests/parallel.test.ts \
+            tests/interactive-ui.test.ts \
+            tests/lunar-solar.de.test.ts \
+            tests/lunar-dem.real-data.test.ts \
+            tests/far-horizon.test.ts \
+            tests/godot-roundtrip.test.ts \
+            tests/godot-integration.test.ts \
+            tests/godot-package.test.ts \
+            tests/snapshot-state.test.ts \
+            tests/sync.test.ts \
+            tests/provenance.test.ts \
+            tests/terramech.test.ts \
+            --pool=forks \
+            --maxWorkers=1 \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json=.test-artifacts/godot-real-vitest.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const report = JSON.parse(readFileSync(".test-artifacts/godot-real-vitest.json", "utf8"));
+            const expectedFiles = [
+              "tests/protocol.test.ts",
+              "tests/construction.test.ts",
+              "tests/parallel.test.ts",
+              "tests/interactive-ui.test.ts",
+              "tests/lunar-solar.de.test.ts",
+              "tests/lunar-dem.real-data.test.ts",
+              "tests/far-horizon.test.ts",
+              "tests/godot-roundtrip.test.ts",
+              "tests/godot-integration.test.ts",
+              "tests/godot-package.test.ts",
+              "tests/snapshot-state.test.ts",
+              "tests/sync.test.ts",
+              "tests/provenance.test.ts",
+              "tests/terramech.test.ts",
+            ];
+            const ranFiles = report.testResults.map((suite) => suite.name.replace(/^.*\/tests\//, "tests/")).sort();
+            const clean = report.success
+              && report.numFailedTestSuites === 0
+              && report.numPendingTestSuites === 0
+              && report.numFailedTests === 0
+              && report.numPendingTests === 0
+              && report.numTodoTests === 0
+              && report.numPassedTestSuites === report.numTotalTestSuites
+              && report.numPassedTests === report.numTotalTests
+              && report.numPassedTests > 0
+              && JSON.stringify(ranFiles) === JSON.stringify([...expectedFiles].sort());
+            if (!clean) {
+              console.error("Godot real-data gate did not run every selected test file", { ranFiles, expectedFiles }, report);
+              process.exit(1);
+            }
+            console.log("Godot real-data gate passed " + report.numPassedTests + " tests with zero skips");
+          '
+
+      - name: Reproduce all 183 committed Site01 artifacts byte-for-byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          oracle="$GITHUB_WORKSPACE/examples/south_pole_site_01/expected-checksums.sha256"
+          config="$RUNNER_TEMP/site01-reproduce-config.json"
+          baseline="$GITHUB_WORKSPACE/.test-artifacts/site01-reproduce-baseline"
+          test "$(wc -l < "$oracle")" -eq 183
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const [source, target, dem, output] = process.argv.slice(1);
+            const config = JSON.parse(readFileSync(source, "utf8"));
+            config.dem.path = dem;
+            config.outputDirectory = output;
+            writeFileSync(target, JSON.stringify(config, null, 2) + "\n");
+          ' examples/south_pole_site_01/config.json "$config" "$LTS_SITE01_DEM" "$baseline"
+          npm run terrain -- generate "$config"
+          (
+            cd "$baseline"
+            sha256sum -c "$oracle"
+          )
+          npm run terrain -- reproduce "$config" | tee "$RUNNER_TEMP/site01-reproduce.log"
+          grep -F "artifacts matched   183 / 183" "$RUNNER_TEMP/site01-reproduce.log"
+          grep -F "reproduced byte-for-byte." "$RUNNER_TEMP/site01-reproduce.log"

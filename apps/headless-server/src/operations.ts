@@ -25,6 +25,7 @@ import { PerlinNoise2D, fbm, type FractalParameters } from '@lts/terrain-core';
 import {
   SPARSE_SAMPLE_CAP,
   type TerrainDelta,
+  type TerrainDeltaMaskSparse,
   type TerrainDeltaSparse,
   type TerrainOperation,
 } from '@lts/terrain-protocol';
@@ -46,6 +47,8 @@ export interface ApplyResult {
    * the heightfield. Empty for a mask-only `semantic_paint`.
    */
   changedSamples: Uint32Array;
+  /** Row-major semantic-mask indices whose stored class actually changed. */
+  changedMaskSamples: Uint32Array;
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number };
   /** Elevation statistics over the touched samples, before the edit. */
   elevationBefore: ElevationStats;
@@ -199,6 +202,28 @@ function requireFinite(v: number | undefined, name: string, kind: string): numbe
   return v;
 }
 
+/** Reject a derived operation value before any terrain or mask byte is committed. */
+function requireFiniteResult(
+  value: number,
+  name: string,
+  kind: string,
+  sampleIndex?: number,
+): number {
+  if (!Number.isFinite(value)) {
+    throw new TerrainError(
+      ERROR_CODES.INVALID_CONFIG,
+      `operation '${kind}' would produce non-finite ${name}; terrain is unchanged`,
+      {
+        kind,
+        name,
+        value: String(value),
+        ...(sampleIndex === undefined ? {} : { sampleIndex }),
+      },
+    );
+  }
+  return value;
+}
+
 /** Apply one operation to a layer, returning the volumes moved. */
 export function applyOperation(layer: TerrainLayer, op: TerrainOperation): ApplyResult {
   const res = layer.horizontalResolutionMeters;
@@ -226,6 +251,9 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
   let paintIndex = 0;
 
   switch (op.kind) {
+    case 'flatten':
+      requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
+      break;
     case 'slope': {
       // A slope without a direction is meaningless, so the heading is
       // required — defaulting it to north would silently tilt the wrong way.
@@ -320,9 +348,21 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       rampNearElev = layer.heightData[r * layer.widthSamples + c];
       break;
     }
-    case 'pad':
+    case 'pad': {
       requireFinite(op.targetElevationMeters, 'targetElevationMeters', op.kind);
+      if (op.lengthMeters !== undefined) {
+        const length = requireFinite(op.lengthMeters, 'lengthMeters', op.kind);
+        if (length <= 0) {
+          throw new TerrainError(
+            ERROR_CODES.INVALID_CONFIG,
+            `operation.lengthMeters must be positive for '${op.kind}'`,
+            { lengthMeters: length },
+          );
+        }
+        requireFinite(op.headingDegrees, 'headingDegrees', op.kind);
+      }
       break;
+    }
     case 'spoil_pile': {
       const requested = Math.abs(op.strengthMeters);
       const maxHeight = op.radiusMeters * TAN_REPOSE;
@@ -482,7 +522,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
           const d = Math.hypot(x - op.centerXMeters, z - op.centerZMeters);
           const w = falloffWeight(d, op.radiusMeters, op.falloff);
           if (w > 0) {
-            const target = op.targetElevationMeters ?? 0;
+            const target = op.targetElevationMeters!;
             dh = (target - layer.heightData[i]) * w;
           }
           break;
@@ -741,9 +781,10 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     }
   }
 
-  // Pass 3: commit, with before/after elevation statistics over the touched
-  // samples (the "before" value is recovered as committed - delta, so no
-  // second scan of the heightfield is needed).
+  // Pass 3: stage every Float32 write and every reported statistic. JavaScript
+  // can hold a finite value (for example 1e308) that overflows when assigned to
+  // Float32Array. Validate the rounded value and all aggregates before the
+  // first height or mask byte changes, so a rejected operation is atomic.
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
@@ -755,18 +796,32 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
   let afterMax = -Infinity;
   let afterSum = 0;
   for (const [i, dh] of deltas) {
-    const before = layer.heightData[i];
-    layer.heightData[i] += dh;
-    const after = layer.heightData[i];
+    requireFiniteResult(dh, 'height delta', op.kind, i);
+    const before = requireFiniteResult(layer.heightData[i], 'source elevation', op.kind, i);
+    const after = requireFiniteResult(
+      Math.fround(before + dh),
+      'Float32 elevation',
+      op.kind,
+      i,
+    );
     touched++;
-    if (dh < 0) removed += -dh * cellArea;
-    else deposited += dh * cellArea;
+    const movedVolume = requireFiniteResult(
+      Math.abs(dh) * cellArea,
+      'sample volume',
+      op.kind,
+      i,
+    );
+    if (dh < 0) {
+      removed = requireFiniteResult(removed + movedVolume, 'removed volume', op.kind, i);
+    } else {
+      deposited = requireFiniteResult(deposited + movedVolume, 'deposited volume', op.kind, i);
+    }
     if (before < beforeMin) beforeMin = before;
     if (before > beforeMax) beforeMax = before;
-    beforeSum += before;
+    beforeSum = requireFiniteResult(beforeSum + before, 'before-elevation sum', op.kind, i);
     if (after < afterMin) afterMin = after;
     if (after > afterMax) afterMax = after;
-    afterSum += after;
+    afterSum = requireFiniteResult(afterSum + after, 'after-elevation sum', op.kind, i);
     const col = i % layer.widthSamples;
     const row = (i - col) / layer.widthSamples;
     const x = layer.bounds.minX + col * res;
@@ -777,11 +832,16 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     if (z > maxZ) maxZ = z;
   }
 
-  // Mark the semantic mask over the feature's own samples (spec §11, §22) —
-  // the geometric footprint, including samples where no earth moved.
+  // Stage semantic changes too. They are committed only after the height and
+  // feature-statistic passes have proved that the whole operation is valid.
+  const changedMaskSamples: number[] = [];
+  let semanticClassIndex: number | undefined;
   if (semClass && shapeSet && layer.masks.semantic) {
-    const classIdx = semanticIndex(semClass);
-    for (const i of shapeSet) layer.masks.semantic[i] = classIdx;
+    semanticClassIndex = semanticIndex(semClass);
+    for (const i of shapeSet) {
+      if (layer.masks.semantic[i] === semanticClassIndex) continue;
+      changedMaskSamples.push(i);
+    }
   }
 
   // Feature-scoped bounds and elevation statistics, over the footprint only.
@@ -805,14 +865,28 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     let aMax = -Infinity;
     let aSum = 0;
     for (const i of shapeSet) {
-      const after = layer.heightData[i];
-      const before = after - (deltas.get(i) ?? 0);
+      const source = requireFiniteResult(layer.heightData[i], 'source elevation', op.kind, i);
+      const delta = deltas.get(i) ?? 0;
+      const after = requireFiniteResult(
+        Math.fround(source + delta),
+        'feature Float32 elevation',
+        op.kind,
+        i,
+      );
+      // Preserve the feature record's established recovery convention: its
+      // before value is the committed Float32 result minus the staged delta.
+      const before = requireFiniteResult(
+        after - delta,
+        'feature before elevation',
+        op.kind,
+        i,
+      );
       if (before < bMin) bMin = before;
       if (before > bMax) bMax = before;
-      bSum += before;
+      bSum = requireFiniteResult(bSum + before, 'feature before-elevation sum', op.kind, i);
       if (after < aMin) aMin = after;
       if (after > aMax) aMax = after;
-      aSum += after;
+      aSum = requireFiniteResult(aSum + after, 'feature after-elevation sum', op.kind, i);
       const col = i % layer.widthSamples;
       const row = (i - col) / layer.widthSamples;
       const x = layer.bounds.minX + col * res;
@@ -823,8 +897,40 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
       if (z > fMaxZ) fMaxZ = z;
     }
     featureBounds = { minX: fMinX, minZ: fMinZ, maxX: fMaxX, maxZ: fMaxZ };
-    featureBefore = { min: bMin, max: bMax, mean: bSum / shapeSet.size };
-    featureAfter = { min: aMin, max: aMax, mean: aSum / shapeSet.size };
+    featureBefore = {
+      min: bMin,
+      max: bMax,
+      mean: requireFiniteResult(
+        bSum / shapeSet.size,
+        'feature before-elevation mean',
+        op.kind,
+      ),
+    };
+    featureAfter = {
+      min: aMin,
+      max: aMax,
+      mean: requireFiniteResult(
+        aSum / shapeSet.size,
+        'feature after-elevation mean',
+        op.kind,
+      ),
+    };
+  }
+
+  const elevationBeforeMean = touched
+    ? requireFiniteResult(beforeSum / touched, 'before-elevation mean', op.kind)
+    : 0;
+  const elevationAfterMean = touched
+    ? requireFiniteResult(afterSum / touched, 'after-elevation mean', op.kind)
+    : 0;
+
+  // Commit is now a non-throwing sequence over values already rounded and
+  // validated above. No observer can receive a half-applied operation.
+  for (const [i, dh] of deltas) {
+    layer.heightData[i] = Math.fround(layer.heightData[i] + dh);
+  }
+  if (semanticClassIndex !== undefined && layer.masks.semantic) {
+    for (const i of changedMaskSamples) layer.masks.semantic[i] = semanticClassIndex;
   }
 
   // A semantic_paint moves no height, so the delta-derived bounds above are
@@ -841,6 +947,7 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     depositedVolumeM3: deposited,
     samplesTouched: touched,
     changedSamples,
+    changedMaskSamples: Uint32Array.from(changedMaskSamples).sort(),
     bounds: paintBounds ?? {
       minX: touched ? minX : ringCx,
       maxX: touched ? maxX : ringCx,
@@ -850,12 +957,12 @@ export function applyOperation(layer: TerrainLayer, op: TerrainOperation): Apply
     elevationBefore: {
       min: touched ? beforeMin : 0,
       max: touched ? beforeMax : 0,
-      mean: touched ? beforeSum / touched : 0,
+      mean: elevationBeforeMean,
     },
     elevationAfter: {
       min: touched ? afterMin : 0,
       max: touched ? afterMax : 0,
-      mean: touched ? afterSum / touched : 0,
+      mean: elevationAfterMean,
     },
     ...(touched === 0 && (!shapeSet || shapeSet.size === 0) ? { noEffect: true } : {}),
     ...(featureBounds ? { featureBounds } : {}),
@@ -952,11 +1059,46 @@ function makeSparse(
   };
 }
 
+/** Exact post-edit semantic values for mask-aware live clients. */
+function makeMaskSparse(
+  layer: TerrainLayer,
+  changedSamples: Uint32Array,
+): { maskSparse?: TerrainDeltaMaskSparse; maskSparseOmitted?: string } {
+  const count = changedSamples.length;
+  if (count === 0) return {};
+  if (count > SPARSE_SAMPLE_CAP) {
+    return {
+      maskSparseOmitted:
+        `mask sample count ${count} exceeds ${SPARSE_SAMPLE_CAP}; fetch the semantic tile instead`,
+    };
+  }
+  const semantic = layer.masks.semantic;
+  if (!semantic) return {};
+  const values = new Uint8Array(count);
+  for (let i = 0; i < count; i++) values[i] = semantic[changedSamples[i]];
+  return {
+    maskSparse: {
+      layerId: layer.id,
+      sampleCount: count,
+      indices: Buffer.from(
+        changedSamples.buffer,
+        changedSamples.byteOffset,
+        changedSamples.byteLength,
+      ).toString('base64'),
+      values: Buffer.from(values.buffer, values.byteOffset, values.byteLength).toString('base64'),
+    },
+  };
+}
+
 /** Build a delta record from an applied operation. */
 export function makeDelta(
   layer: TerrainLayer,
   op: TerrainOperation,
   result: ApplyResult,
+  rocksReseated: number,
+  previousRockTransferSha256: string,
+  resultingRockTransferSha256: string,
+  datasetRevision: number,
   sequenceNumber: number,
   previousChecksum: string,
   previousMaskChecksum: string,
@@ -966,13 +1108,19 @@ export function makeDelta(
   const scale = Math.max(result.removedVolumeM3, result.depositedVolumeM3);
   return {
     deltaId: `delta-${String(sequenceNumber).padStart(6, '0')}`,
+    datasetRevision,
     sequenceNumber,
     timestamp: op.timestamp,
     affectedBounds: result.bounds,
     changedTiles: tilesInBounds(layer, tileSizeSamples, result.bounds),
     operations: [op],
+    rocksReseated,
+    previousRockTransferSha256,
+    resultingRockTransferSha256,
     changedSampleCount: result.changedSamples.length,
     ...makeSparse(layer, result.changedSamples),
+    changedMaskSampleCount: result.changedMaskSamples.length,
+    ...makeMaskSparse(layer, result.changedMaskSamples),
     previousChecksum,
     resultingChecksum: layerChecksum(layer),
     previousMaskChecksum,

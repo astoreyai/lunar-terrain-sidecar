@@ -26,6 +26,9 @@ export interface PolarStereographicParams {
   centralMeridianDeg: number;
   /** Scale factor at the pole. */
   scaleFactor: number;
+  /** False projected origin, metres. */
+  falseEastingM: number;
+  falseNorthingM: number;
   /** Sphere radius, metres. */
   radiusM: number;
 }
@@ -34,6 +37,8 @@ export const SOUTH_POLAR_LOLA: PolarStereographicParams = {
   hemisphere: -1,
   centralMeridianDeg: 0,
   scaleFactor: 1,
+  falseEastingM: 0,
+  falseNorthingM: 0,
   radiusM: LUNAR_RADIUS_M,
 };
 
@@ -61,9 +66,14 @@ export function forward(
       ? 2 * p.radiusM * p.scaleFactor * Math.tan(Math.PI / 4 + phi / 2)
       : 2 * p.radiusM * p.scaleFactor * Math.tan(Math.PI / 4 - phi / 2);
 
-  return p.hemisphere === -1
-    ? { x: rho * Math.sin(dLambda), y: rho * Math.cos(dLambda) }
-    : { x: rho * Math.sin(dLambda), y: -rho * Math.cos(dLambda) };
+  const x = rho * Math.sin(dLambda);
+  const y = p.hemisphere === -1 ? rho * Math.cos(dLambda) : -rho * Math.cos(dLambda);
+  return {
+    // Preserve the exact pre-metadata arithmetic for the supported LOLA/PGDA
+    // products, whose false offsets are both zero.
+    x: p.falseEastingM === 0 ? x : x + p.falseEastingM,
+    y: p.falseNorthingM === 0 ? y : y + p.falseNorthingM,
+  };
 }
 
 /** Projected (x, y) in metres → selenographic (lat, lon) in degrees. */
@@ -72,7 +82,9 @@ export function inverse(
   y: number,
   p: PolarStereographicParams = SOUTH_POLAR_LOLA,
 ): { latitudeDeg: number; longitudeDeg: number } {
-  const rho = Math.hypot(x, y);
+  const projectedX = p.falseEastingM === 0 ? x : x - p.falseEastingM;
+  const projectedY = p.falseNorthingM === 0 ? y : y - p.falseNorthingM;
+  const rho = Math.hypot(projectedX, projectedY);
   if (rho === 0) {
     return { latitudeDeg: p.hemisphere === -1 ? -90 : 90, longitudeDeg: p.centralMeridianDeg };
   }
@@ -80,11 +92,11 @@ export function inverse(
 
   if (p.hemisphere === -1) {
     const lat = (c - Math.PI / 2) * RAD;
-    const lon = p.centralMeridianDeg + Math.atan2(x, y) * RAD;
+    const lon = p.centralMeridianDeg + Math.atan2(projectedX, projectedY) * RAD;
     return { latitudeDeg: lat, longitudeDeg: normalizeLongitude(lon) };
   }
   const lat = (Math.PI / 2 - c) * RAD;
-  const lon = p.centralMeridianDeg + Math.atan2(x, -y) * RAD;
+  const lon = p.centralMeridianDeg + Math.atan2(projectedX, -projectedY) * RAD;
   return { latitudeDeg: lat, longitudeDeg: normalizeLongitude(lon) };
 }
 

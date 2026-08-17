@@ -6,27 +6,39 @@
  * implementation of the physics-bearing data (spec §33).
  */
 
-import { SidecarClient, decodeTile, RpcError } from './rpc.js';
-import { Viewer, type CameraMode } from './viewer.js';
-import { overlayLegend, type OverlayMode, slopeDegAt, roughnessAt, traversabilityScore } from './overlays.js';
-import { PRESETS, presetToConfig } from './presets.js';
-import { GpuPreview, type PreviewStackLayer } from './gpuPreview.js';
+import { SidecarClient, decodeTile, RpcError } from "./rpc.js";
+import { Viewer, type CameraMode } from "./viewer.js";
+import {
+  overlayLegend,
+  type OverlayMode,
+  slopeDegAt,
+  roughnessAt,
+  traversabilityScore,
+} from "./overlays.js";
+import { PRESETS, presetToConfig } from "./presets.js";
+import { GpuPreview, type PreviewStackLayer } from "./gpuPreview.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
 
 const client = new SidecarClient();
 let viewer: Viewer;
+let rockPreviewSupported = false;
 let activeBrush: string | null = null;
 const undoStack: Array<Record<string, unknown>> = [];
 const redoStack: Array<Record<string, unknown>> = [];
 
 /** Construction kinds that take an explicit heading and length (protocol.md). */
-const HEADING_KINDS = new Set(['ramp', 'pad', 'wheel_track']);
+const HEADING_KINDS = new Set(["ramp", "pad", "wheel_track"]);
 /** Kinds whose target elevation the user may override (auto = surface at click). */
-const TARGET_KINDS = new Set(['ramp', 'pad', 'polygonal_cut', 'polygonal_fill']);
+const TARGET_KINDS = new Set([
+  "ramp",
+  "pad",
+  "polygonal_cut",
+  "polygonal_fill",
+]);
 /** Kinds driven by a clicked polygon rather than a single brush centre. */
-const POLYGON_KINDS = new Set(['polygonal_cut', 'polygonal_fill']);
+const POLYGON_KINDS = new Set(["polygonal_cut", "polygonal_fill"]);
 /** Vertices collected so far for a polygonal_cut/polygonal_fill, world metres. */
 const polygonVertices: Array<[number, number]> = [];
 let currentLayers: Awaited<ReturnType<typeof fetchLayers>> = [];
@@ -37,41 +49,54 @@ function setStatus(id: string, value: string): void {
   if (el) el.textContent = value;
 }
 
-function log(id: string, text: string, cls?: 'pass' | 'fail'): void {
+function log(id: string, text: string, cls?: "pass" | "fail"): void {
   const el = $(id);
   el.textContent = text;
-  el.className = `log${cls ? ` ${cls}` : ''}`;
+  el.className = `log${cls ? ` ${cls}` : ""}`;
 }
 
 // ------------------------------------------------------------ configuration
 
 function currentPreset() {
-  return PRESETS[($('cfg-preset') as HTMLSelectElement).value] ?? PRESETS.south_pole_navigation;
+  return (
+    PRESETS[($("cfg-preset") as HTMLSelectElement).value] ??
+    PRESETS.south_pole_navigation
+  );
 }
 
 function buildConfig(): Record<string, unknown> {
   const num = (id: string) => Number(($(id) as HTMLInputElement).value);
   const str = (id: string) => ($(id) as HTMLInputElement).value;
   const cfg = presetToConfig(currentPreset(), {
-    terrainId: str('cfg-terrain-id'),
-    seed: str('cfg-seed'),
-    outputDirectory: str('cfg-output'),
-    latitudeDeg: num('cfg-lat'),
-    longitudeDeg: num('cfg-lon'),
-    epochUtc: str('cfg-epoch'),
-    demEnabled: ($('cfg-dem-enabled') as HTMLInputElement).checked,
-    demPath: str('cfg-dem-path'),
-    demEffectiveResolutionMeters: num('cfg-dem-effres'),
-    craterModel: ($('cfg-crater-model') as HTMLSelectElement).value as 'production_csfd',
-    craterAgeGyr: num('cfg-crater-age'),
-    craterMinDiameterM: num('cfg-crater-dmin'),
-    craterMaxDiameterM: num('cfg-crater-dmax'),
-    craterMeanDegradation: num('cfg-crater-degradation'),
-    rockModel: ($('cfg-rock-model') as HTMLSelectElement).value as 'golombek_sfd',
-    rockAreaCoverage: num('cfg-rock-k'),
-    rockMinDiameterM: num('cfg-rock-dmin'),
-    rockPhysicalMinDiameterM: num('cfg-rock-physical'),
+    terrainId: str("cfg-terrain-id"),
+    seed: str("cfg-seed"),
+    outputDirectory: str("cfg-output"),
+    latitudeDeg: num("cfg-lat"),
+    longitudeDeg: num("cfg-lon"),
+    epochUtc: str("cfg-epoch"),
+    demEnabled: ($("cfg-dem-enabled") as HTMLInputElement).checked,
+    demPath: str("cfg-dem-path"),
+    demEffectiveResolutionMeters: num("cfg-dem-effres"),
+    craterModel: ($("cfg-crater-model") as HTMLSelectElement)
+      .value as "production_csfd",
+    craterAgeGyr: num("cfg-crater-age"),
+    craterMinDiameterM: num("cfg-crater-dmin"),
+    craterMaxDiameterM: num("cfg-crater-dmax"),
+    craterMeanDegradation: num("cfg-crater-degradation"),
+    rockModel: ($("cfg-rock-model") as HTMLSelectElement)
+      .value as "golombek_sfd",
+    rockAreaCoverage: num("cfg-rock-k"),
+    rockMinDiameterM: num("cfg-rock-dmin"),
+    rockPhysicalMinDiameterM: num("cfg-rock-physical"),
   });
+  const solar = cfg.solar as { mode: string; kernelDirectory?: string };
+  solar.mode = ($("cfg-solar-mode") as HTMLSelectElement).value;
+  const kernelDirectory = str("cfg-kernel-dir").trim();
+  if (solar.mode === "ephemeris_de" && kernelDirectory) {
+    solar.kernelDirectory = kernelDirectory;
+  } else {
+    delete solar.kernelDirectory;
+  }
   // The procedural panel's editable fields override the preset's fractal
   // parameters, so what the GPU previews is exactly what Generate commits.
   const stack = cfg.proceduralStack as Array<{
@@ -79,36 +104,153 @@ function buildConfig(): Record<string, unknown> {
     fractal: { octaves: number; frequency: number; amplitude: number };
   }>;
   for (const s of stack) {
-    const read = (field: string, fallback: number, min: number, integer = false): number => {
-      const el = document.getElementById(`proc-${s.id}-${field}`) as HTMLInputElement | null;
+    const read = (
+      field: string,
+      fallback: number,
+      min: number,
+      integer = false,
+    ): number => {
+      const el = document.getElementById(
+        `proc-${s.id}-${field}`,
+      ) as HTMLInputElement | null;
       if (!el) return fallback;
       const v = Number(el.value);
       if (!Number.isFinite(v) || v < min) return fallback;
       return integer ? Math.round(v) : v;
     };
-    s.fractal.octaves = read('octaves', s.fractal.octaves, 1, true);
-    s.fractal.frequency = read('frequency', s.fractal.frequency, 1e-6);
-    s.fractal.amplitude = read('amplitude', s.fractal.amplitude, 0);
+    s.fractal.octaves = read("octaves", s.fractal.octaves, 1, true);
+    s.fractal.frequency = read("frequency", s.fractal.frequency, 1e-6);
+    s.fractal.amplitude = read("amplitude", s.fractal.amplitude, 0);
   }
   return cfg;
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalValue(nested)]),
+    );
+  }
+  return value;
+}
+
+function configurationsEqual(a: unknown, b: unknown): boolean {
+  return (
+    JSON.stringify(canonicalValue(a)) === JSON.stringify(canonicalValue(b))
+  );
+}
+
+/**
+ * Restore a configuration produced by this UI without silently dropping
+ * fields. Configurations whose layer/layout or hidden settings the preset UI
+ * cannot represent are rejected and the prior form state is restored.
+ */
+function applyLoadedConfig(raw: unknown, verify = true): void {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("configuration JSON must contain an object");
+  }
+  const cfg = raw as Record<string, unknown>;
+  const presetEntry = Object.entries(PRESETS).find(([, preset]) =>
+    configurationsEqual(preset.layers, cfg.layers),
+  );
+  if (!presetEntry) {
+    throw new Error(
+      "configuration layers do not match a UI preset; use the CLI so custom layers are preserved",
+    );
+  }
+  const solar = cfg.solar as Record<string, unknown> | undefined;
+  if (solar?.mode !== "ephemeris" && solar?.mode !== "ephemeris_de") {
+    throw new Error(
+      `solar mode ${JSON.stringify(solar?.mode)} is not editable in this UI; use the CLI`,
+    );
+  }
+
+  const previous = verify ? buildConfig() : null;
+  try {
+    const setValue = (id: string, value: unknown): void => {
+      if (value !== undefined)
+        ($(id) as HTMLInputElement | HTMLSelectElement).value = String(value);
+    };
+    const site = cfg.site as Record<string, unknown> | undefined;
+    const dem = cfg.dem as Record<string, unknown> | undefined;
+    const craters = cfg.craters as Record<string, unknown> | undefined;
+    const rocks = cfg.rocks as Record<string, unknown> | undefined;
+
+    ($("cfg-preset") as HTMLSelectElement).value = presetEntry[0];
+    renderLayerTable();
+    renderProceduralRows();
+
+    setValue("cfg-terrain-id", cfg.terrainId);
+    setValue("cfg-seed", cfg.seed);
+    setValue("cfg-output", cfg.outputDirectory);
+    setValue("cfg-lat", site?.latitudeDeg);
+    setValue("cfg-lon", site?.longitudeDeg);
+    if (typeof dem?.enabled === "boolean") {
+      ($("cfg-dem-enabled") as HTMLInputElement).checked = dem.enabled;
+    }
+    setValue("cfg-dem-path", dem?.path);
+    setValue("cfg-dem-effres", dem?.effectiveResolutionMeters);
+    setValue("cfg-crater-model", craters?.model);
+    setValue("cfg-crater-age", craters?.surfaceAgeGyr);
+    setValue("cfg-crater-dmin", craters?.minimumDiameterMeters);
+    setValue("cfg-crater-dmax", craters?.maximumDiameterMeters);
+    setValue("cfg-crater-degradation", craters?.meanDegradation);
+    setValue("cfg-rock-model", rocks?.model);
+    setValue("cfg-rock-k", rocks?.cumulativeFractionalAreaCovered);
+    setValue("cfg-rock-dmin", rocks?.minimumDiameterMeters);
+    setValue("cfg-rock-physical", rocks?.physicalMinimumDiameterMeters);
+    setValue("cfg-epoch", solar.epochUtc);
+    setValue("cfg-solar-mode", solar.mode);
+    setValue("cfg-kernel-dir", solar.kernelDirectory ?? "");
+
+    for (const entry of (cfg.proceduralStack as unknown[] | undefined) ?? []) {
+      if (entry === null || typeof entry !== "object") continue;
+      const stackLayer = entry as Record<string, unknown>;
+      const fractal = stackLayer.fractal as Record<string, unknown> | undefined;
+      const id = String(stackLayer.id ?? "");
+      for (const field of ["octaves", "frequency", "amplitude"] as const) {
+        const input = document.getElementById(
+          `proc-${id}-${field}`,
+        ) as HTMLInputElement | null;
+        if (input && fractal?.[field] !== undefined)
+          input.value = String(fractal[field]);
+      }
+    }
+
+    updateSolarModeUi();
+    previewBaseline = null;
+    clearGpuPreview();
+
+    if (verify && !configurationsEqual(buildConfig(), cfg)) {
+      throw new Error(
+        "configuration contains settings this preset UI cannot preserve; use the CLI to avoid changing them",
+      );
+    }
+  } catch (error) {
+    if (previous) applyLoadedConfig(previous, false);
+    throw error;
+  }
+}
+
 function renderLayerTable(): void {
   const preset = currentPreset();
-  const tbody = $('layer-rows');
-  const select = $('cfg-selected-layer') as HTMLSelectElement;
-  tbody.innerHTML = '';
-  select.innerHTML = '';
+  const tbody = $("layer-rows");
+  const select = $("cfg-selected-layer") as HTMLSelectElement;
+  tbody.innerHTML = "";
+  select.innerHTML = "";
   for (const l of preset.layers) {
     const samples = Math.floor(l.widthMeters / l.resolutionMeters) + 1;
-    const tr = document.createElement('tr');
+    const tr = document.createElement("tr");
     tr.className = `role-${l.role}`;
     tr.innerHTML =
       `<td>${l.role}</td><td>${l.widthMeters}×${l.lengthMeters}</td>` +
       `<td>${l.resolutionMeters}</td><td>${(samples * samples).toLocaleString()}</td>`;
     tbody.appendChild(tr);
 
-    const opt = document.createElement('option');
+    const opt = document.createElement("option");
     opt.value = l.role;
     opt.textContent = `${l.role} (${l.resolutionMeters} m)`;
     select.appendChild(opt);
@@ -117,28 +259,30 @@ function renderLayerTable(): void {
     a.resolutionMeters <= b.resolutionMeters ? a : b,
   );
   select.value = finest.role;
-  setStatus('status-layer', finest.role);
-  setStatus('status-resolution', `${finest.resolutionMeters} m`);
-  const ctx = preset.layers.reduce((a, b) => (a.widthMeters >= b.widthMeters ? a : b));
-  setStatus('status-dimensions', `${ctx.widthMeters}×${ctx.lengthMeters} m`);
+  setStatus("status-layer", finest.role);
+  setStatus("status-resolution", `${finest.resolutionMeters} m`);
+  const ctx = preset.layers.reduce((a, b) =>
+    a.widthMeters >= b.widthMeters ? a : b,
+  );
+  setStatus("status-dimensions", `${ctx.widthMeters}×${ctx.lengthMeters} m`);
 }
 
 function renderProceduralRows(): void {
   const cfg = presetToConfig(currentPreset(), {
-    terrainId: 'x',
-    seed: 'x',
-    outputDirectory: 'x',
+    terrainId: "x",
+    seed: "x",
+    outputDirectory: "x",
   });
   const stack = cfg.proceduralStack as Array<{
     id: string;
     model: string;
     fractal: { octaves: number; frequency: number; amplitude: number };
   }>;
-  const host = $('procedural-rows');
-  host.innerHTML = '';
+  const host = $("procedural-rows");
+  host.innerHTML = "";
   for (const s of stack) {
-    const row = document.createElement('div');
-    row.className = 'chips';
+    const row = document.createElement("div");
+    row.className = "chips";
     row.innerHTML =
       `<span style="color:var(--text)">${s.id}</span>` +
       `<span style="color:var(--muted)">${s.model}</span>`;
@@ -147,33 +291,65 @@ function renderProceduralRows(): void {
     // Editable fractal parameters. Generate commits them through the sidecar
     // (buildConfig); with the GPU preview enabled, edits also drive an
     // instant, non-authoritative preview.
-    const params = document.createElement('div');
-    params.className = 'chips';
-    const field = (name: string, label: string, value: number, step: string): string =>
+    const params = document.createElement("div");
+    params.className = "chips";
+    const field = (
+      name: string,
+      label: string,
+      value: number,
+      step: string,
+    ): string =>
       `<label style="display:flex;gap:4px;align-items:center;color:var(--muted)">${label}` +
       `<input id="proc-${s.id}-${name}" type="number" step="${step}" value="${value}" ` +
       `style="width:62px" /></label>`;
     params.innerHTML =
-      field('octaves', 'oct', s.fractal.octaves, '1') +
-      field('frequency', 'freq 1/m', s.fractal.frequency, '0.01') +
-      field('amplitude', 'amp m', s.fractal.amplitude, '0.01');
+      field("octaves", "oct", s.fractal.octaves, "1") +
+      field("frequency", "freq 1/m", s.fractal.frequency, "0.01") +
+      field("amplitude", "amp m", s.fractal.amplitude, "0.01");
     host.appendChild(params);
-    for (const input of Array.from(params.querySelectorAll('input'))) {
-      input.addEventListener('input', onProceduralParamEdit);
+    for (const input of Array.from(params.querySelectorAll("input"))) {
+      input.addEventListener("input", onProceduralParamEdit);
     }
   }
 }
 
 // ------------------------------------------------------------ sidecar calls
 
+/**
+ * The page cannot know where a checkout put the downloaded Site01 DEM; the
+ * sidecar resolves `LTS_SITE01_DEM` (or its documented fallback), checks the
+ * file exists and reports it in `terrain.capabilities`. Adopt it unless the
+ * operator has already typed a different path into the field.
+ */
+const initialDemPath = ($("cfg-dem-path") as HTMLInputElement).value;
+function adoptSidecarDemPath(path: string | null): void {
+  if (!path) return;
+  const field = $("cfg-dem-path") as HTMLInputElement;
+  if (field.value.trim() === "" || field.value === initialDemPath) {
+    field.value = path;
+  }
+}
+
 async function connect(): Promise<void> {
-  const url = ($('sidecar-url') as HTMLInputElement).value;
+  const url = ($("sidecar-url") as HTMLInputElement).value;
   try {
+    rockPreviewSupported = false;
     await client.connect(url);
-    const health = await client.call<{ protocolVersion: string; generatorVersion: string }>(
-      'terrain.health',
+    const [health, capabilities] = await Promise.all([
+      client.call<{ protocolVersion: string; generatorVersion: string }>(
+        "terrain.health",
+      ),
+      client.call<{
+        methods: string[];
+        datasets?: { site01DemPath: string | null; site01DemSource: string };
+      }>("terrain.capabilities"),
+    ]);
+    rockPreviewSupported = capabilities.methods.includes("terrain.getRocks");
+    adoptSidecarDemPath(capabilities.datasets?.site01DemPath ?? null);
+    setStatus(
+      "status-sidecar",
+      `connected · protocol ${health.protocolVersion}`,
     );
-    setStatus('status-sidecar', `connected · protocol ${health.protocolVersion}`);
     // The sidecar holds one session that outlives this page: if it already
     // has a dataset (generated by a previous page, the CLI, or another
     // client), render it now rather than showing an empty scene until the
@@ -181,12 +357,13 @@ async function connect(): Promise<void> {
     // case, not an error worth surfacing.
     try {
       await loadDataset();
-      setStatus('status-job', 'loaded from sidecar');
+      setStatus("status-job", "loaded from sidecar");
     } catch (e) {
-      if (!(e instanceof RpcError)) throw e;
+      if (!(e instanceof RpcError) || e.terrainCode !== "TERRAIN_JOB_NOT_FOUND")
+        throw e;
     }
   } catch (e) {
-    setStatus('status-sidecar', `unreachable: ${(e as Error).message}`);
+    setStatus("status-sidecar", `unreachable: ${(e as Error).message}`);
   }
 }
 
@@ -194,21 +371,29 @@ async function estimate(): Promise<void> {
   const config = buildConfig();
   try {
     const r = await client.call<{
-      estimate: { totalFieldBytes: number; totalTiles: number; totalSamples: number; warnings: string[] };
+      estimate: {
+        totalFieldBytes: number;
+        totalTiles: number;
+        totalSamples: number;
+        warnings: string[];
+      };
       feasible: boolean;
       error: { code: string; message: string } | null;
-    }>('terrain.estimate', { config });
-    setStatus('status-memory', `${(r.estimate.totalFieldBytes / 1e6).toFixed(1)} MB`);
+    }>("terrain.estimate", { config });
+    setStatus(
+      "status-memory",
+      `${(r.estimate.totalFieldBytes / 1e6).toFixed(1)} MB`,
+    );
     const lines = [
       `samples   ${r.estimate.totalSamples.toLocaleString()}`,
       `fields    ${(r.estimate.totalFieldBytes / 1e6).toFixed(1)} MB`,
       `tiles     ${r.estimate.totalTiles}`,
-      `feasible  ${r.feasible ? 'yes' : `NO — ${r.error?.code}`}`,
+      `feasible  ${r.feasible ? "yes" : `NO — ${r.error?.code}`}`,
       ...r.estimate.warnings.map((w) => `\n! ${w}`),
     ];
-    log('export-result', lines.join('\n'), r.feasible ? 'pass' : 'fail');
+    log("export-result", lines.join("\n"), r.feasible ? "pass" : "fail");
   } catch (e) {
-    log('export-result', describeError(e), 'fail');
+    log("export-result", describeError(e), "fail");
   }
 }
 
@@ -227,46 +412,64 @@ async function generate(): Promise<void> {
   // would hide the progress overlay while the second job still runs.
   if (generating) return;
   generating = true;
-  ($('btn-generate') as HTMLButtonElement).disabled = true;
+  ($("btn-generate") as HTMLButtonElement).disabled = true;
   // Generate always clears the GPU preview: what follows is the real,
   // authoritative sidecar data (spec §33).
   clearGpuPreview();
   const config = buildConfig();
-  $('progress-overlay').hidden = false;
+  ($("progress-fill") as HTMLElement).style.width = "0%";
+  $("progress-overlay").setAttribute("aria-valuenow", "0");
+  $("progress-overlay").hidden = false;
   const started = performance.now();
 
   client.onProgress = (evt) => {
-    ($('progress-fill') as HTMLElement).style.width = `${(evt.progress * 100).toFixed(0)}%`;
-    $('progress-stage').textContent = `${evt.stage} ${(evt.progress * 100).toFixed(0)}%`;
-    setStatus('status-job', evt.stage);
+    const percent = (evt.progress * 100).toFixed(0);
+    ($("progress-fill") as HTMLElement).style.width = `${percent}%`;
+    $("progress-overlay").setAttribute("aria-valuenow", percent);
+    $("progress-stage").textContent = `${evt.stage} ${percent}%`;
+    setStatus("status-job", evt.stage);
   };
 
   try {
-    const start = await client.call<{ jobId: string }>('terrain.generate', { config });
-    let status: { status: string; error?: { code: string; message: string } } | undefined;
+    const start = await client.call<{ jobId: string }>("terrain.generate", {
+      config,
+    });
+    let status:
+      { status: string; error?: { code: string; message: string } } | undefined;
     for (;;) {
       await new Promise((r) => setTimeout(r, 150));
-      status = await client.call('terrain.getStatus', { jobId: start.jobId });
-      if (status!.status === 'complete' || status!.status === 'failed' || status!.status === 'cancelled') break;
+      status = await client.call("terrain.getStatus", { jobId: start.jobId });
+      if (
+        status!.status === "complete" ||
+        status!.status === "failed" ||
+        status!.status === "cancelled"
+      )
+        break;
     }
-    if (status!.status !== 'complete') {
-      log('export-result', `generation ${status!.status}: ${status!.error?.message ?? ''}`, 'fail');
+    if (status!.status !== "complete") {
+      log(
+        "export-result",
+        `generation ${status!.status}: ${status!.error?.message ?? ""}`,
+        "fail",
+      );
       return;
     }
-    setStatus('perf-generate', `${Math.round(performance.now() - started)} ms`);
-    setStatus('status-job', 'complete');
+    setStatus("perf-generate", `${Math.round(performance.now() - started)} ms`);
+    setStatus("status-job", "complete");
     await loadDataset();
     // The just-committed parameters are the new preview baseline.
-    if (($('viz-gpu-preview') as HTMLInputElement).checked && gpuPreviewReady) {
+    if (($("viz-gpu-preview") as HTMLInputElement).checked && gpuPreviewReady) {
       previewBaseline = readPreviewStack();
-      setGpuStatus('GPU preview rebased on the committed parameters — approximate only');
+      setGpuStatus(
+        "GPU preview rebased on the committed parameters — approximate only",
+      );
     }
   } catch (e) {
-    log('export-result', describeError(e), 'fail');
+    log("export-result", describeError(e), "fail");
   } finally {
-    $('progress-overlay').hidden = true;
+    $("progress-overlay").hidden = true;
     generating = false;
-    ($('btn-generate') as HTMLButtonElement).disabled = false;
+    ($("btn-generate") as HTMLButtonElement).disabled = false;
   }
 }
 
@@ -280,29 +483,71 @@ interface LayerMeta {
   elevationProvenance: string;
 }
 
-async function fetchLayers(): Promise<
-  Array<LayerMeta & { heights: Float32Array }>
-> {
-  const ds = await client.call<{
-    terrainId: string;
-    seed: string;
-    origin: { site: { latitudeDeg: number; longitudeDeg: number } };
-    layers: LayerMeta[];
-    features: { craters: number; rocks: number };
-    provenance: Record<string, unknown>;
-  }>('terrain.getDataset');
+interface DatasetSnapshot {
+  terrainId: string;
+  seed: string;
+  datasetRevision: number;
+  sequenceNumber: number;
+  baseline: {
+    immutableIdentitySha256: string;
+    worldStateSha256: string;
+  };
+  origin: { site: { latitudeDeg: number; longitudeDeg: number } };
+  layers: LayerMeta[];
+  features: { craters: number; rocks: number };
+  provenance: Record<string, unknown>;
+}
 
-  setStatus('insp-terrain', ds.terrainId);
-  setStatus('insp-seed', ds.seed);
-  setStatus('status-seed', ds.seed);
+interface RockPreview extends Pick<
+  DatasetSnapshot,
+  "terrainId" | "seed" | "datasetRevision" | "sequenceNumber" | "baseline"
+> {
+  totalCount: number;
+  returnedCount: number;
+  truncated: boolean;
+  physicalCount: number;
+  provenance: string;
+  rocks: Array<{
+    position_m: number[];
+    scale_m: number[];
+    rotation_quaternion: number[];
+    physical: boolean;
+  }>;
+}
+
+function sameDatasetSnapshot(
+  left: Pick<
+    DatasetSnapshot,
+    "terrainId" | "seed" | "datasetRevision" | "sequenceNumber" | "baseline"
+  >,
+  right: Pick<
+    DatasetSnapshot,
+    "terrainId" | "seed" | "datasetRevision" | "sequenceNumber" | "baseline"
+  >,
+): boolean {
+  return (
+    left.terrainId === right.terrainId &&
+    left.seed === right.seed &&
+    left.datasetRevision === right.datasetRevision &&
+    left.sequenceNumber === right.sequenceNumber &&
+    left.baseline.immutableIdentitySha256 ===
+      right.baseline.immutableIdentitySha256 &&
+    left.baseline.worldStateSha256 === right.baseline.worldStateSha256
+  );
+}
+
+function installDatasetMetadata(ds: DatasetSnapshot): void {
+  setStatus("insp-terrain", ds.terrainId);
+  setStatus("insp-seed", ds.seed);
+  setStatus("status-seed", ds.seed);
   datasetSeed = ds.seed;
   setStatus(
-    'insp-site',
+    "insp-site",
     `${ds.origin.site.latitudeDeg.toFixed(4)}°, ${ds.origin.site.longitudeDeg.toFixed(4)}°`,
   );
-  setStatus('insp-layers', String(ds.layers.length));
-  setStatus('insp-craters', ds.features.craters.toLocaleString());
-  setStatus('insp-rocks', ds.features.rocks.toLocaleString());
+  setStatus("insp-layers", String(ds.layers.length));
+  setStatus("insp-craters", ds.features.craters.toLocaleString());
+  setStatus("insp-rocks", ds.features.rocks.toLocaleString());
 
   const prov = ds.provenance as {
     dataSources?: Array<{ id: string; citation: string }>;
@@ -311,9 +556,17 @@ async function fetchLayers(): Promise<
   const provText = [
     ...(prov.dataSources ?? []).map((d) => `source: ${d.id}\n  ${d.citation}`),
     ...(prov.syntheticHeuristics ?? []).map((h) => `synthetic: ${h}`),
-  ].join('\n\n');
-  log('insp-provenance', provText || 'fully synthetic — no measured DEM used');
+  ].join("\n\n");
+  log("insp-provenance", provText || "fully synthetic — no measured DEM used");
+}
 
+async function fetchLayers(
+  ds: DatasetSnapshot,
+): Promise<
+  Array<
+    LayerMeta & { heights: Float32Array; authoritativeResolutionMeters: number }
+  >
+> {
   // Stream each layer's heightfield, decimated server-side.
   //
   // A 3001x3001 operational layer is 36 MB of float32 and 48 MB base64 — far
@@ -322,18 +575,25 @@ async function fetchLayers(): Promise<
   // preview; authoritative elevations come from terrain.getHeight, which reads
   // the full-resolution field.
   const PREVIEW_MAX_SIDE = 512;
-  const out: Array<LayerMeta & { heights: Float32Array }> = [];
+  const out: Array<
+    LayerMeta & {
+      heights: Float32Array;
+      authoritativeResolutionMeters: number;
+    }
+  > = [];
   for (const layer of ds.layers) {
     const stride = Math.max(
       1,
-      Math.ceil(Math.max(layer.widthSamples, layer.heightSamples) / PREVIEW_MAX_SIDE),
+      Math.ceil(
+        Math.max(layer.widthSamples, layer.heightSamples) / PREVIEW_MAX_SIDE,
+      ),
     );
     const tile = await client.call<{
       data: string;
       width: number;
       height: number;
       resolutionMeters: number;
-    }>('terrain.getTile', {
+    }>("terrain.getTile", {
       layerId: layer.id,
       col0: 0,
       row0: 0,
@@ -343,6 +603,7 @@ async function fetchLayers(): Promise<
     });
     out.push({
       ...layer,
+      authoritativeResolutionMeters: layer.resolutionMeters,
       widthSamples: tile.width,
       heightSamples: tile.height,
       resolutionMeters: tile.resolutionMeters,
@@ -365,8 +626,60 @@ let loadGeneration = 0;
 
 async function loadDataset(): Promise<void> {
   const myGeneration = ++loadGeneration;
-  const layers = await fetchLayers();
-  if (myGeneration !== loadGeneration) return; // superseded — discard
+  let stable: {
+    dataset: DatasetSnapshot;
+    layers: Awaited<ReturnType<typeof fetchLayers>>;
+    rocks: RockPreview | null;
+  } | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const opening = await client.call<DatasetSnapshot>("terrain.getDataset");
+    if (myGeneration !== loadGeneration) return;
+    // A public observation boundary lets diagnostics coordinate a real
+    // concurrent-client test without replacing any RPC or inventing data.
+    document.dispatchEvent(
+      new CustomEvent("lts:dataset-snapshot-opened", {
+        detail: {
+          terrainId: opening.terrainId,
+          seed: opening.seed,
+          datasetRevision: opening.datasetRevision,
+          sequenceNumber: opening.sequenceNumber,
+          worldStateSha256: opening.baseline.worldStateSha256,
+        },
+      }),
+    );
+    const rockRequest: Promise<RockPreview | null> = rockPreviewSupported
+      ? client.call<RockPreview>("terrain.getRocks", { maxInstances: 25_000 })
+      : Promise.resolve(null);
+    const [layers, rockPreview] = await Promise.all([
+      fetchLayers(opening),
+      rockRequest,
+    ]);
+    const closing = await client.call<DatasetSnapshot>("terrain.getDataset");
+    if (myGeneration !== loadGeneration) return;
+    if (
+      sameDatasetSnapshot(opening, closing) &&
+      (rockPreview === null || sameDatasetSnapshot(opening, rockPreview))
+    ) {
+      stable = { dataset: closing, layers, rocks: rockPreview };
+      break;
+    }
+  }
+  if (stable === null) {
+    throw new Error(
+      "sidecar world changed during two consecutive dataset transfers; nothing was installed",
+    );
+  }
+  const { dataset, layers, rocks: rockPreview } = stable;
+  installDatasetMetadata(dataset);
+  // Undo/redo records belong to one installed world. A regenerate, a restore,
+  // or a connect to a sidecar holding another dataset changes the revision;
+  // re-applying an old inverse there would edit terrain it never touched.
+  const worldIdentity = `${dataset.terrainId}|${dataset.seed}|${dataset.datasetRevision}`;
+  if (worldIdentity !== installedWorldIdentity) {
+    installedWorldIdentity = worldIdentity;
+    undoStack.length = 0;
+    redoStack.length = 0;
+  }
   currentLayers = layers;
   // Freshly streamed sidecar data supersedes any GPU preview.
   clearGpuPreview();
@@ -382,17 +695,35 @@ async function loadDataset(): Promise<void> {
       minZ: l.bounds.minZ,
     })),
   );
+  if (rockPreview) {
+    viewer.setRocks(rockPreview.rocks);
+    setStatus(
+      "insp-rock-rendering",
+      rockPreview.truncated
+        ? `${rockPreview.returnedCount.toLocaleString()} / ${rockPreview.totalCount.toLocaleString()} modelled`
+        : `${rockPreview.returnedCount.toLocaleString()} modelled instances`,
+    );
+    const existingProvenance = $("insp-provenance").textContent ?? "";
+    if (!existingProvenance.includes(rockPreview.provenance)) {
+      log(
+        "insp-provenance",
+        `${existingProvenance}${existingProvenance ? "\n\n" : ""}rock display: ${rockPreview.provenance}`,
+      );
+    }
+  } else {
+    // terrain.getRocks is an additive 1.x capability. Retain compatibility
+    // with an older 1.x sidecar and say exactly why instances are absent.
+    viewer.setRocks([]);
+    setStatus(
+      "insp-rock-rendering",
+      "unavailable · sidecar lacks terrain.getRocks",
+    );
+  }
+  const exposed = (window as unknown as Record<string, unknown>).__lts as
+    Record<string, unknown> | undefined;
+  if (exposed) exposed.datasetSnapshot = dataset;
   applyVisualization();
   await refreshSolar();
-
-  try {
-    const rocks = await client.call<{ rocks: unknown[] }>('terrain.getManifest', {
-      directory: ($('cfg-output') as HTMLInputElement).value,
-    });
-    void rocks;
-  } catch {
-    // Manifest is optional for display; the viewport does not depend on it.
-  }
 }
 
 let lastSolarElevationDeg: number | null = null;
@@ -404,40 +735,83 @@ let lastSolarElevationDeg: number | null = null;
  * scene is black for a different reason.
  */
 function updateNightBanner(): void {
-  const overlay = ($('viz-overlay') as HTMLSelectElement).value;
-  const earthshine = ($('viz-earthshine') as HTMLInputElement).checked;
+  const overlay = ($("viz-overlay") as HTMLSelectElement).value;
+  const earthshine = ($("viz-earthshine") as HTMLInputElement).checked;
   const night =
     currentLayers.length > 0 &&
-    overlay === 'lit' &&
+    overlay === "lit" &&
     !earthshine &&
     lastSolarElevationDeg !== null &&
     lastSolarElevationDeg <= 0;
-  ($('night-banner') as HTMLElement).hidden = !night;
+  ($("night-banner") as HTMLElement).hidden = !night;
+}
+
+function updateSolarModeUi(): void {
+  const deMode =
+    ($("cfg-solar-mode") as HTMLSelectElement).value === "ephemeris_de";
+  $("cfg-kernel-row").hidden = !deMode;
+  setStatus(
+    "solar-status",
+    deMode
+      ? "JPL DE440 mode reads the server kernel directory and fails explicitly if kernels are unavailable; it never falls back."
+      : "Analytic Meeus / IAU mode is deterministic and remains the byte-compatible default.",
+  );
 }
 
 async function refreshSolar(): Promise<void> {
   try {
+    const mode = ($("cfg-solar-mode") as HTMLSelectElement).value;
+    const kernelDirectory = (
+      $("cfg-kernel-dir") as HTMLInputElement
+    ).value.trim();
+    const params: Record<string, unknown> = {
+      epochUtc: ($("cfg-epoch") as HTMLInputElement).value,
+      mode,
+    };
+    if (mode === "ephemeris_de" && kernelDirectory)
+      params.kernelDirectory = kernelDirectory;
     const s = await client.call<{
       elevationDeg: number;
       azimuthDeg: number;
       subSolar: { latitudeDeg: number };
-    }>('terrain.getSolar', { epochUtc: ($('cfg-epoch') as HTMLInputElement).value });
+      model: "ephemeris" | "ephemeris_de";
+    }>("terrain.getSolar", params);
 
-    setStatus('solar-elevation', `${s.elevationDeg.toFixed(4)}°`);
-    setStatus('solar-azimuth', `${s.azimuthDeg.toFixed(3)}°`);
-    setStatus('solar-subsolar', `${s.subSolar.latitudeDeg.toFixed(4)}°`);
     setStatus(
-      'solar-shadow',
+      "solar-model",
+      s.model === "ephemeris_de" ? "JPL DE440" : "Analytic Meeus / IAU",
+    );
+    setStatus("solar-elevation", `${s.elevationDeg.toFixed(4)}°`);
+    setStatus("solar-azimuth", `${s.azimuthDeg.toFixed(3)}°`);
+    setStatus("solar-subsolar", `${s.subSolar.latitudeDeg.toFixed(4)}°`);
+    setStatus(
+      "solar-shadow",
       s.elevationDeg > 0
         ? `${(1 / Math.tan((s.elevationDeg * Math.PI) / 180)).toFixed(1)} m`
-        : 'sun below horizon',
+        : "sun below horizon",
     );
     viewer.setSolar(s.azimuthDeg, s.elevationDeg);
     lastSolarElevationDeg = s.elevationDeg;
+    $("solar-unavailable-banner").hidden = true;
+    setStatus(
+      "solar-status",
+      s.model === "ephemeris_de"
+        ? "Kernel-backed JPL DE440 geometry; no analytic fallback was used."
+        : "Deterministic analytic Meeus / IAU geometry (the byte-compatible default).",
+    );
   } catch (e) {
-    setStatus('solar-elevation', 'unavailable');
+    viewer.clearSolar();
+    setStatus("solar-model", "unavailable");
+    setStatus("solar-elevation", "unavailable");
+    setStatus("solar-azimuth", "—");
+    setStatus("solar-subsolar", "—");
+    setStatus("solar-shadow", "—");
+    setStatus(
+      "solar-status",
+      `SOLAR UNAVAILABLE · ${describeError(e).split("\n", 1)[0]}`,
+    );
+    $("solar-unavailable-banner").hidden = false;
     lastSolarElevationDeg = null;
-    void e;
   }
   updateNightBanner();
 }
@@ -449,24 +823,24 @@ async function exportTerrain(): Promise<void> {
       artifacts: number;
       totalBytes: number;
       validation: { passed: boolean; errors: number };
-    }>('terrain.export', {
-      outputDirectory: ($('cfg-output') as HTMLInputElement).value,
+    }>("terrain.export", {
+      outputDirectory: ($("cfg-output") as HTMLInputElement).value,
       // The format checkboxes were previously wired to nothing: unchecking
       // EXR still exported EXR. They now travel with the request.
       formats: {
-        exr: ($('fmt-exr') as HTMLInputElement).checked,
-        png16: ($('fmt-png') as HTMLInputElement).checked,
-        glb: ($('fmt-glb') as HTMLInputElement).checked,
+        exr: ($("fmt-exr") as HTMLInputElement).checked,
+        png16: ($("fmt-png") as HTMLInputElement).checked,
+        glb: ($("fmt-glb") as HTMLInputElement).checked,
       },
     });
     log(
-      'export-result',
+      "export-result",
       `${r.artifacts} artifacts, ${(r.totalBytes / 1e6).toFixed(1)} MB\n${r.outputDirectory}\n` +
-        `validation: ${r.validation.passed ? 'PASSED' : `FAILED (${r.validation.errors} errors)`}`,
-      r.validation.passed ? 'pass' : 'fail',
+        `validation: ${r.validation.passed ? "PASSED" : `FAILED (${r.validation.errors} errors)`}`,
+      r.validation.passed ? "pass" : "fail",
     );
   } catch (e) {
-    log('export-result', describeError(e), 'fail');
+    log("export-result", describeError(e), "fail");
   }
 }
 
@@ -475,25 +849,25 @@ async function validate(): Promise<void> {
     const r = await client.call<{
       outputDirectory: string;
       validation: { passed: boolean; errors: number };
-    }>('terrain.export', {
-      outputDirectory: ($('cfg-output') as HTMLInputElement).value,
+    }>("terrain.export", {
+      outputDirectory: ($("cfg-output") as HTMLInputElement).value,
       // The format checkboxes were previously wired to nothing: unchecking
       // EXR still exported EXR. They now travel with the request.
       formats: {
-        exr: ($('fmt-exr') as HTMLInputElement).checked,
-        png16: ($('fmt-png') as HTMLInputElement).checked,
-        glb: ($('fmt-glb') as HTMLInputElement).checked,
+        exr: ($("fmt-exr") as HTMLInputElement).checked,
+        png16: ($("fmt-png") as HTMLInputElement).checked,
+        glb: ($("fmt-glb") as HTMLInputElement).checked,
       },
     });
     log(
-      'validation-result',
+      "validation-result",
       r.validation.passed
         ? `PASSED — 0 errors\n${r.outputDirectory}`
         : `FAILED — ${r.validation.errors} errors\n${r.outputDirectory}`,
-      r.validation.passed ? 'pass' : 'fail',
+      r.validation.passed ? "pass" : "fail",
     );
   } catch (e) {
-    log('validation-result', describeError(e), 'fail');
+    log("validation-result", describeError(e), "fail");
   }
 }
 
@@ -509,18 +883,22 @@ async function applyStoredOperation(
       delta: {
         deltaId: string;
         changedTiles: string[];
-        massBalance: { removedVolumeM3: number; depositedVolumeM3: number; relativeError: number };
+        massBalance: {
+          removedVolumeM3: number;
+          depositedVolumeM3: number;
+          relativeError: number;
+        };
       };
       reposeClamp?: {
         requestedHeightMeters: number;
         appliedHeightMeters: number;
         reposeAngleDeg: number;
       };
-    }>('terrain.applyOperation', { operation });
+    }>("terrain.applyOperation", { operation });
 
     if (pushUndo) undoStack.push(operation);
     const mb = r.delta.massBalance;
-    $('edit-status').textContent =
+    $("edit-status").textContent =
       `${r.delta.deltaId}: ${r.delta.changedTiles.length} tiles · ` +
       `cut ${mb.removedVolumeM3.toFixed(3)} m³ · fill ${mb.depositedVolumeM3.toFixed(3)} m³ · ` +
       `error ${(mb.relativeError * 100).toFixed(2)}%` +
@@ -529,14 +907,14 @@ async function applyStoredOperation(
       (r.reposeClamp
         ? ` · height clamped to ${r.reposeClamp.appliedHeightMeters.toFixed(3)} m ` +
           `by ${r.reposeClamp.reposeAngleDeg} deg repose`
-        : '');
+        : "");
     await loadDataset();
     // Keep the history panel current once the user has looked at it; before
     // the first Refresh there is nothing on screen to keep in sync.
     if (historyFetched && client.connected) void refreshHistory();
     return true;
   } catch (e) {
-    $('edit-status').textContent = describeError(e);
+    $("edit-status").textContent = describeError(e);
     return false;
   }
 }
@@ -557,19 +935,23 @@ interface OperationLogEntry {
 async function refreshHistory(): Promise<void> {
   if (!client.connected) return;
   historyFetched = true;
-  const host = $('history-rows');
+  const host = $("history-rows");
   try {
-    const r = await client.call<{ operations: OperationLogEntry[] }>('terrain.getOperationLog');
-    host.textContent = '';
+    const r = await client.call<{ operations: OperationLogEntry[] }>(
+      "terrain.getOperationLog",
+    );
+    host.textContent = "";
     if (r.operations.length === 0) {
-      host.textContent = 'no operations recorded';
+      host.textContent = "no operations recorded";
       return;
     }
     r.operations.forEach((op, i) => {
-      const row = document.createElement('div');
-      row.className = 'history-row';
+      const row = document.createElement("div");
+      row.className = "history-row";
       // Time-of-day only — a full ISO stamp per row would drown the kind.
-      const tod = op.timestamp ? new Date(op.timestamp).toISOString().slice(11, 19) : '—';
+      const tod = op.timestamp
+        ? new Date(op.timestamp).toISOString().slice(11, 19)
+        : "—";
       row.textContent = `#${i} ${op.kind} r=${Number(op.radiusMeters).toFixed(1)} m ${tod}`;
       host.appendChild(row);
     });
@@ -590,21 +972,27 @@ async function refreshHistory(): Promise<void> {
 async function replayHistory(): Promise<void> {
   if (!client.connected) return;
   try {
-    const log = await client.call<{ operations: OperationLogEntry[] }>('terrain.getOperationLog');
+    const log = await client.call<{ operations: OperationLogEntry[] }>(
+      "terrain.getOperationLog",
+    );
     if (log.operations.length === 0) {
-      $('edit-status').textContent = 'operation log is empty — nothing to re-apply';
+      $("edit-status").textContent =
+        "operation log is empty — nothing to re-apply";
       return;
     }
-    const r = await client.call<{ applied: number; finalChecksum: string }>('terrain.replayLog', {
-      operations: log.operations,
-    });
-    $('edit-status').textContent =
+    const r = await client.call<{ applied: number; finalChecksum: string }>(
+      "terrain.replayLog",
+      {
+        operations: log.operations,
+      },
+    );
+    $("edit-status").textContent =
       `re-applied ${r.applied} operation(s) on top of the current terrain · ` +
       `checksum ${r.finalChecksum.slice(0, 12)}…`;
     await loadDataset();
     await refreshHistory();
   } catch (e) {
-    $('edit-status').textContent = describeError(e);
+    $("edit-status").textContent = describeError(e);
   }
 }
 
@@ -615,15 +1003,15 @@ async function replayHistory(): Promise<void> {
  * pre-existing behaviour of every brush.
  */
 function resolveTargetElevation(x: number, z: number): number {
-  const auto = ($('brush-target-auto') as HTMLInputElement).checked;
+  const auto = ($("brush-target-auto") as HTMLInputElement).checked;
   const surface = viewer.surfaceHeightAt(x, z);
-  if (auto || !TARGET_KINDS.has(activeBrush ?? '')) {
+  if (auto || !TARGET_KINDS.has(activeBrush ?? "")) {
     // Reflect the auto value into the override field so unticking "auto"
     // starts from a real elevation rather than a stale one.
-    ($('brush-target') as HTMLInputElement).value = surface.toFixed(3);
+    ($("brush-target") as HTMLInputElement).value = surface.toFixed(3);
     return surface;
   }
-  return Number(($('brush-target') as HTMLInputElement).value);
+  return Number(($("brush-target") as HTMLInputElement).value);
 }
 
 async function applyBrushAt(x: number, z: number): Promise<void> {
@@ -633,7 +1021,7 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
     // applyPolygon (Enter / "Apply polygon"), not per click.
     polygonVertices.push([x, z]);
     viewer.addPolygonPreview(polygonVertices);
-    $('edit-status').textContent =
+    $("edit-status").textContent =
       `polygon: ${polygonVertices.length} vertices — ` +
       `Enter or "Apply polygon" submits, Escape or "Clear" resets`;
     return;
@@ -642,28 +1030,32 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
   // `slope` descends along its (required) heading — an ADR 0002 azimuth,
   // clockwise from north — so it reads the same heading field the
   // construction kinds use.
-  const usesHeading = HEADING_KINDS.has(activeBrush) || activeBrush === 'slope';
-  const heading = usesHeading ? num('brush-heading') : 0;
-  const length = HEADING_KINDS.has(activeBrush) ? num('brush-length') : num('brush-radius') * 4;
+  const usesHeading = HEADING_KINDS.has(activeBrush) || activeBrush === "slope";
+  const heading = usesHeading ? num("brush-heading") : 0;
+  const length = HEADING_KINDS.has(activeBrush)
+    ? num("brush-length")
+    : num("brush-radius") * 4;
   const operation: Record<string, unknown> = {
     kind: activeBrush,
     centerXMeters: x,
     centerZMeters: z,
-    radiusMeters: num('brush-radius'),
-    strengthMeters: num('brush-strength'),
-    falloff: num('brush-falloff'),
-    massConserving: ($('brush-mass-conserving') as HTMLInputElement).checked,
+    radiusMeters: num("brush-radius"),
+    strengthMeters: num("brush-strength"),
+    falloff: num("brush-falloff"),
+    massConserving: ($("brush-mass-conserving") as HTMLInputElement).checked,
     headingDegrees: heading,
     lengthMeters: length,
     targetElevationMeters: resolveTargetElevation(x, z),
   };
   // The server requires these per kind and refuses their absence with a
   // structured error (protocol.md kind table).
-  if (activeBrush === 'noise') {
-    operation.noiseSeed = ($('brush-noise-seed') as HTMLInputElement).value;
+  if (activeBrush === "noise") {
+    operation.noiseSeed = ($("brush-noise-seed") as HTMLInputElement).value;
   }
-  if (activeBrush === 'semantic_paint') {
-    operation.semanticClass = ($('brush-semantic-class') as HTMLSelectElement).value;
+  if (activeBrush === "semantic_paint") {
+    operation.semanticClass = (
+      $("brush-semantic-class") as HTMLSelectElement
+    ).value;
   }
   // A NEW stroke invalidates the redo history; undo/redo themselves do not.
   if (await applyStoredOperation(operation, true)) redoStack.length = 0;
@@ -671,25 +1063,28 @@ async function applyBrushAt(x: number, z: number): Promise<void> {
 
 /** Submit the collected polygon as a polygonal_cut / polygonal_fill. */
 async function applyPolygon(): Promise<void> {
-  if (!activeBrush || !POLYGON_KINDS.has(activeBrush) || !client.connected) return;
+  if (!activeBrush || !POLYGON_KINDS.has(activeBrush) || !client.connected)
+    return;
   if (polygonVertices.length < 3) {
-    $('edit-status').textContent =
+    $("edit-status").textContent =
       `polygon needs at least 3 vertices (have ${polygonVertices.length})`;
     return;
   }
   const num = (id: string) => Number(($(id) as HTMLInputElement).value);
   // The centroid stands in for the brush centre: it anchors the auto target
   // elevation and the (otherwise unused) centre coordinates.
-  const cx = polygonVertices.reduce((s, v) => s + v[0], 0) / polygonVertices.length;
-  const cz = polygonVertices.reduce((s, v) => s + v[1], 0) / polygonVertices.length;
+  const cx =
+    polygonVertices.reduce((s, v) => s + v[0], 0) / polygonVertices.length;
+  const cz =
+    polygonVertices.reduce((s, v) => s + v[1], 0) / polygonVertices.length;
   const operation = {
     kind: activeBrush,
     centerXMeters: cx,
     centerZMeters: cz,
-    radiusMeters: num('brush-radius'),
-    strengthMeters: num('brush-strength'),
-    falloff: num('brush-falloff'),
-    massConserving: ($('brush-mass-conserving') as HTMLInputElement).checked,
+    radiusMeters: num("brush-radius"),
+    strengthMeters: num("brush-strength"),
+    falloff: num("brush-falloff"),
+    massConserving: ($("brush-mass-conserving") as HTMLInputElement).checked,
     targetElevationMeters: resolveTargetElevation(cx, cz),
     polygonXZ: polygonVertices.map((v) => [v[0], v[1]]),
   };
@@ -703,29 +1098,34 @@ async function applyPolygon(): Promise<void> {
 function clearPolygon(announce: boolean): void {
   polygonVertices.length = 0;
   viewer.clearPolygonPreview();
-  if (announce) $('edit-status').textContent = 'polygon cleared';
+  if (announce) $("edit-status").textContent = "polygon cleared";
 }
 
 /** Show only the parameter fields the active brush actually uses. */
 function updateBrushParamVisibility(): void {
-  const kind = activeBrush ?? '';
+  const kind = activeBrush ?? "";
   // `slope` shares the heading field: its gradient descends along an
   // ADR 0002 azimuth exactly like the construction kinds' axes.
-  $('param-heading').hidden = !(HEADING_KINDS.has(kind) || kind === 'slope');
-  $('param-length').hidden = !HEADING_KINDS.has(kind);
-  $('param-target-auto').hidden = !TARGET_KINDS.has(kind);
-  $('param-target').hidden = !TARGET_KINDS.has(kind);
-  $('param-noise-seed').hidden = kind !== 'noise';
-  $('param-semantic-class').hidden = kind !== 'semantic_paint';
-  $('polygon-controls').hidden = !POLYGON_KINDS.has(kind);
+  $("param-heading").hidden = !(HEADING_KINDS.has(kind) || kind === "slope");
+  $("param-length").hidden = !HEADING_KINDS.has(kind);
+  $("param-target-auto").hidden = !TARGET_KINDS.has(kind);
+  $("param-target").hidden = !TARGET_KINDS.has(kind);
+  $("param-noise-seed").hidden = kind !== "noise";
+  $("param-semantic-class").hidden = kind !== "semantic_paint";
+  $("polygon-controls").hidden = !POLYGON_KINDS.has(kind);
+  const coordinateButton = $("btn-brush-apply-coords") as HTMLButtonElement;
+  coordinateButton.disabled = !activeBrush;
+  coordinateButton.textContent = POLYGON_KINDS.has(kind)
+    ? "Add polygon vertex"
+    : "Apply active tool";
 }
 
 /** Kinds whose stored parameters fully determine an exact inverse. */
 const INVERTIBLE_KINDS: Record<string, string> = {
-  raise: 'lower',
-  lower: 'raise',
-  berm: 'trench',
-  trench: 'berm',
+  raise: "lower",
+  lower: "raise",
+  berm: "trench",
+  trench: "berm",
 };
 
 /**
@@ -743,14 +1143,18 @@ const INVERTIBLE_KINDS: Record<string, string> = {
  */
 async function undo(): Promise<void> {
   const op = undoStack.pop();
-  if (!op) return;
+  if (!op) {
+    $("edit-status").textContent =
+      "nothing to undo: no edits recorded on the installed terrain";
+    return;
+  }
 
   const kind = String(op.kind);
   const inverseKind = INVERTIBLE_KINDS[kind];
   if (!inverseKind) {
     // Not invertible: put it back so the history stays truthful.
     undoStack.push(op);
-    $('edit-status').textContent =
+    $("edit-status").textContent =
       `cannot undo '${kind}': it is not invertible from the operation record ` +
       `(the pre-edit surface is not stored). Regenerate to reset.`;
     return;
@@ -761,7 +1165,7 @@ async function undo(): Promise<void> {
   // the original op goes to the redo stack instead.
   if (await applyStoredOperation(inverse, false)) {
     redoStack.push(op);
-    $('edit-status').textContent = `undid ${kind}`;
+    $("edit-status").textContent = `undid ${kind}`;
   } else {
     undoStack.push(op); // failed — restore history
   }
@@ -773,9 +1177,13 @@ async function undo(): Promise<void> {
  */
 async function redo(): Promise<void> {
   const op = redoStack.pop();
-  if (!op) return;
+  if (!op) {
+    $("edit-status").textContent =
+      "nothing to redo: no undone edits recorded on the installed terrain";
+    return;
+  }
   if (await applyStoredOperation(op, true)) {
-    $('edit-status').textContent = `redid ${String(op.kind)}`;
+    $("edit-status").textContent = `redid ${String(op.kind)}`;
   } else {
     redoStack.push(op);
   }
@@ -793,24 +1201,24 @@ async function redo(): Promise<void> {
 let gpuPreview: GpuPreview | null = null;
 let gpuPreviewReady = false;
 /** Seed of the dataset currently rendered — set by fetchLayers. */
-let datasetSeed = '';
+let datasetSeed = "";
+let installedWorldIdentity = "";
 /** The stack parameters the rendered terrain was generated with. */
 let previewBaseline: PreviewStackLayer[] | null = null;
 let previewActive = false;
 let previewBusy = false;
 let previewQueued = false;
 
-const GPU_UNAVAILABLE = 'WebGPU not available in this browser';
+const GPU_UNAVAILABLE = "WebGPU not available in this browser";
 
 function setGpuStatus(text: string): void {
-  setStatus('gpu-preview-status', text);
+  setStatus("gpu-preview-status", text);
 }
 
 /** Mirror preview state onto window.__lts for the Playwright checks. */
 function updatePreviewFlags(maxAbsDelta: number | null): void {
   const lts = (window as unknown as Record<string, unknown>).__lts as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   if (lts) {
     lts.previewActive = previewActive;
     lts.previewMaxAbsDelta = maxAbsDelta;
@@ -824,10 +1232,13 @@ function updatePreviewFlags(maxAbsDelta: number | null): void {
  */
 function readPreviewStack(): PreviewStackLayer[] {
   const cfg = buildConfig();
-  const dem = cfg.dem as { enabled: boolean; effectiveResolutionMeters: number };
+  const dem = cfg.dem as {
+    enabled: boolean;
+    effectiveResolutionMeters: number;
+  };
   const stack = cfg.proceduralStack as Array<{
     id: string;
-    model: 'fbm' | 'ridged' | 'warped_fbm';
+    model: "fbm" | "ridged" | "warped_fbm";
     enabled: boolean;
     fractal: {
       octaves: number;
@@ -844,7 +1255,8 @@ function readPreviewStack(): PreviewStackLayer[] {
     id: s.id,
     model: s.model,
     enabled:
-      s.enabled && (!dem.enabled || 1 / s.fractal.frequency < dem.effectiveResolutionMeters),
+      s.enabled &&
+      (!dem.enabled || 1 / s.fractal.frequency < dem.effectiveResolutionMeters),
     fractal: {
       octaves: s.fractal.octaves,
       lacunarity: s.fractal.lacunarity,
@@ -862,7 +1274,7 @@ function readPreviewStack(): PreviewStackLayer[] {
 /** Drop the preview and show sidecar data again. Never touches the sidecar. */
 function clearGpuPreview(statusText?: string): void {
   if (viewer) viewer.restorePreview();
-  const banner = document.getElementById('gpu-preview-banner');
+  const banner = document.getElementById("gpu-preview-banner");
   if (banner) banner.hidden = true;
   previewActive = false;
   updatePreviewFlags(null);
@@ -871,7 +1283,7 @@ function clearGpuPreview(statusText?: string): void {
 
 async function setGpuPreviewEnabled(on: boolean): Promise<void> {
   if (!on) {
-    clearGpuPreview('off — the CPU sidecar remains the sole authority');
+    clearGpuPreview("off — the CPU sidecar remains the sole authority");
     return;
   }
   if (!GpuPreview.isSupported()) {
@@ -880,7 +1292,7 @@ async function setGpuPreviewEnabled(on: boolean): Promise<void> {
   }
   if (!gpuPreview) gpuPreview = new GpuPreview();
   if (!gpuPreviewReady) {
-    setGpuStatus('initialising WebGPU…');
+    setGpuStatus("initialising WebGPU…");
     gpuPreviewReady = await gpuPreview.init();
     if (!gpuPreviewReady) {
       setGpuStatus(`${GPU_UNAVAILABLE} (${gpuPreview.failureReason})`);
@@ -890,7 +1302,9 @@ async function setGpuPreviewEnabled(on: boolean): Promise<void> {
   // The values on screen describe the terrain being shown; edits are
   // previewed as deltas against them.
   previewBaseline = readPreviewStack();
-  setGpuStatus('GPU preview ready — approximate only; edit procedural parameters');
+  setGpuStatus(
+    "GPU preview ready — approximate only; edit procedural parameters",
+  );
 }
 
 async function runGpuPreview(): Promise<void> {
@@ -901,13 +1315,14 @@ async function runGpuPreview(): Promise<void> {
     return;
   }
   const layer =
-    currentLayers.find((l) => l.role === 'operational') ??
+    currentLayers.find((l) => l.role === "operational") ??
     currentLayers.reduce<(typeof currentLayers)[number] | undefined>(
-      (best, l) => (!best || l.resolutionMeters < best.resolutionMeters ? l : best),
+      (best, l) =>
+        !best || l.resolutionMeters < best.resolutionMeters ? l : best,
       undefined,
     );
   if (!layer || !datasetSeed) {
-    setGpuStatus('GPU preview idle — no terrain loaded (Generate first)');
+    setGpuStatus("GPU preview idle — no terrain loaded (Generate first)");
     return;
   }
   if (!previewBaseline) previewBaseline = readPreviewStack();
@@ -915,14 +1330,19 @@ async function runGpuPreview(): Promise<void> {
   try {
     const edited = readPreviewStack();
     const t0 = performance.now();
-    const heights = await gpuPreview.compute(datasetSeed, previewBaseline, edited, {
-      widthSamples: layer.widthSamples,
-      heightSamples: layer.heightSamples,
-      minX: layer.bounds.minX,
-      minZ: layer.bounds.minZ,
-      resolutionMeters: layer.resolutionMeters,
-      baseHeights: layer.heights,
-    });
+    const heights = await gpuPreview.compute(
+      datasetSeed,
+      previewBaseline,
+      edited,
+      {
+        widthSamples: layer.widthSamples,
+        heightSamples: layer.heightSamples,
+        minX: layer.bounds.minX,
+        minZ: layer.bounds.minZ,
+        resolutionMeters: layer.resolutionMeters,
+        baseHeights: layer.heights,
+      },
+    );
     const ms = performance.now() - t0;
     let maxAbs = 0;
     for (let i = 0; i < heights.length; i++) {
@@ -930,15 +1350,17 @@ async function runGpuPreview(): Promise<void> {
       if (d > maxAbs) maxAbs = d;
     }
     viewer.setPreviewHeights(layer.id, heights);
-    $('gpu-preview-banner').hidden = false;
+    $("gpu-preview-banner").hidden = false;
     previewActive = true;
     updatePreviewFlags(maxAbs);
     setGpuStatus(
       `GPU preview ${ms.toFixed(0)} ms · max |Δ| ${maxAbs.toFixed(3)} m — ` +
-        'approximate; Generate to commit',
+        "approximate; Generate to commit",
     );
   } catch (e) {
-    clearGpuPreview(`GPU preview failed: ${(e as Error).message} — showing sidecar data`);
+    clearGpuPreview(
+      `GPU preview failed: ${(e as Error).message} — showing sidecar data`,
+    );
   } finally {
     previewBusy = false;
     if (previewQueued) {
@@ -950,27 +1372,30 @@ async function runGpuPreview(): Promise<void> {
 
 /** Input handler for the procedural panel's parameter fields. */
 function onProceduralParamEdit(): void {
-  if (!(($('viz-gpu-preview') as HTMLInputElement).checked) || !gpuPreviewReady) return;
+  if (!($("viz-gpu-preview") as HTMLInputElement).checked || !gpuPreviewReady)
+    return;
   void runGpuPreview();
 }
 
 // --------------------------------------------------------------- viewport
 
 function applyVisualization(): void {
-  const overlay = ($('viz-overlay') as HTMLSelectElement).value as OverlayMode;
+  const overlay = ($("viz-overlay") as HTMLSelectElement).value as OverlayMode;
   viewer.setOverlay(overlay);
-  viewer.setWireframe(($('viz-wireframe') as HTMLInputElement).checked);
+  viewer.setWireframe(($("viz-wireframe") as HTMLInputElement).checked);
   viewer.setHelpers({
-    grid: ($('viz-grid') as HTMLInputElement).checked,
-    tileBounds: ($('viz-tilebounds') as HTMLInputElement).checked,
-    contours: ($('viz-contours') as HTMLInputElement).checked,
+    grid: ($("viz-grid") as HTMLInputElement).checked,
+    tileBounds: ($("viz-tilebounds") as HTMLInputElement).checked,
+    contours: ($("viz-contours") as HTMLInputElement).checked,
   });
-  viewer.setEarthshine(($('viz-earthshine') as HTMLInputElement).checked);
-  viewer.setCameraMode(($('viz-camera') as HTMLSelectElement).value as CameraMode);
+  viewer.setEarthshine(($("viz-earthshine") as HTMLInputElement).checked);
+  viewer.setCameraMode(
+    ($("viz-camera") as HTMLSelectElement).value as CameraMode,
+  );
 
   const legend = overlayLegend(overlay);
-  $('legend-title').textContent = legend.title;
-  $('legend-note').textContent = legend.note;
+  $("legend-title").textContent = legend.title;
+  $("legend-note").textContent = legend.note;
   updateNightBanner();
 }
 
@@ -982,13 +1407,27 @@ function applyVisualization(): void {
  * sidecar, which holds the full-resolution field.
  */
 let pointQueryPending = false;
+let queuedPointQuery: { x: number; z: number } | null = null;
 async function queryPointAuthoritative(x: number, z: number): Promise<void> {
-  if (pointQueryPending || !client.connected) return;
+  if (!client.connected) return;
+  if (pointQueryPending) {
+    // Pointer events can outrun the authoritative RPCs while the renderer is
+    // busy. Drop intermediate positions but retain the newest one so the
+    // inspector converges to the point the operator is actually indicating.
+    queuedPointQuery = { x, z };
+    return;
+  }
   pointQueryPending = true;
   try {
     const [h, sem, trav] = await Promise.all([
-      client.call<{ elevationM: number; layerId: string | null }>('terrain.getHeight', { x, z }),
-      client.call<{ semanticClass: string | null }>('terrain.getSemanticClass', { x, z }),
+      client.call<{ elevationM: number; layerId: string | null }>(
+        "terrain.getHeight",
+        { x, z },
+      ),
+      client.call<{ semanticClass: string | null }>(
+        "terrain.getSemanticClass",
+        { x, z },
+      ),
       client.call<{
         traversability: {
           // Bekker default shape (iteration 10) with the labeled heuristic
@@ -1000,48 +1439,60 @@ async function queryPointAuthoritative(x: number, z: number): Promise<void> {
           score?: number;
           heuristic?: { score: number };
         } | null;
-      }>('terrain.getTraversability', { x, z }),
+      }>("terrain.getTraversability", { x, z }),
     ]);
     if (Number.isFinite(h.elevationM)) {
-      setStatus('insp-elevation', `${h.elevationM.toFixed(4)} m`);
-      setStatus('status-elevation', `${h.elevationM.toFixed(4)} m`);
+      setStatus("insp-elevation", `${h.elevationM.toFixed(4)} m`);
+      setStatus("status-elevation", `${h.elevationM.toFixed(4)} m`);
     }
-    setStatus('insp-semantic', sem.semanticClass ?? '—');
+    setStatus("insp-semantic", sem.semanticClass ?? "—");
     if (trav.traversability) {
       const t = trav.traversability;
-      setStatus('insp-slope', `${t.slopeDeg.toFixed(2)}°`);
+      setStatus("insp-slope", `${t.slopeDeg.toFixed(2)}°`);
       // Prefer the Bekker classification (model-based, sourced parameters);
       // fall back to whichever score shape is present.
-      if (t.model === 'bekker' && t.class) {
+      if (t.model === "bekker" && t.class) {
         setStatus(
-          'insp-trav',
-          `${t.class} (margin ${t.slopeMarginDeg?.toFixed(1) ?? '—'}°)`,
+          "insp-trav",
+          `${t.class} (margin ${t.slopeMarginDeg?.toFixed(1) ?? "—"}°)`,
         );
       } else {
         const score = t.score ?? t.heuristic?.score;
-        setStatus('insp-trav', score !== undefined ? score.toFixed(3) : '—');
+        setStatus("insp-trav", score !== undefined ? score.toFixed(3) : "—");
       }
     }
   } catch {
     // A dropped query is not worth surfacing; the preview values still show.
   } finally {
     pointQueryPending = false;
+    const next = queuedPointQuery;
+    queuedPointQuery = null;
+    if (next) void queryPointAuthoritative(next.x, next.z);
   }
 }
 
 function updateCursorReadout(x: number, z: number): void {
-  setStatus('status-cursor', `${x.toFixed(3)}, ${z.toFixed(3)} m`);
+  setStatus("status-cursor", `${x.toFixed(3)}, ${z.toFixed(3)} m`);
   // Instant feedback from the preview mesh, then the authoritative value.
   const y = viewer.surfaceHeightAt(x, z);
-  setStatus('status-elevation', `${y.toFixed(4)} m`);
-  setStatus('insp-xz', `${x.toFixed(2)}, ${z.toFixed(2)}`);
-  setStatus('insp-elevation', `${y.toFixed(4)} m`);
+  setStatus("status-elevation", `${y.toFixed(4)} m`);
+  setStatus("insp-xz", `${x.toFixed(2)}, ${z.toFixed(2)}`);
+  setStatus("insp-elevation", `${y.toFixed(4)} m`);
+  const brushX = $("brush-x") as HTMLInputElement;
+  const brushZ = $("brush-z") as HTMLInputElement;
+  if (document.activeElement !== brushX && document.activeElement !== brushZ) {
+    brushX.value = x.toFixed(3);
+    brushZ.value = z.toFixed(3);
+  }
   void queryPointAuthoritative(x, z);
 
-  const layer = currentLayers.reduce<(typeof currentLayers)[number] | undefined>((best, l) => {
+  const layer = currentLayers.reduce<
+    (typeof currentLayers)[number] | undefined
+  >((best, l) => {
     const maxX = l.bounds.minX + (l.widthSamples - 1) * l.resolutionMeters;
     const maxZ = l.bounds.minZ + (l.heightSamples - 1) * l.resolutionMeters;
-    if (x < l.bounds.minX || x > maxX || z < l.bounds.minZ || z > maxZ) return best;
+    if (x < l.bounds.minX || x > maxX || z < l.bounds.minZ || z > maxZ)
+      return best;
     return !best || l.resolutionMeters < best.resolutionMeters ? l : best;
   }, undefined);
   if (!layer) return;
@@ -1056,64 +1507,85 @@ function updateCursorReadout(x: number, z: number): void {
     row,
     layer.resolutionMeters,
   );
-  const rough = roughnessAt(layer.heights, layer.widthSamples, layer.heightSamples, col, row);
-  setStatus('insp-slope', `${slope.toFixed(2)}°`);
+  const rough = roughnessAt(
+    layer.heights,
+    layer.widthSamples,
+    layer.heightSamples,
+    col,
+    row,
+  );
+  setStatus("insp-slope", `${slope.toFixed(2)}°`);
   setStatus(
-    'insp-trav',
+    "insp-trav",
     traversabilityScore(slope, rough, layer.resolutionMeters).toFixed(3),
   );
-  setStatus('status-layer', layer.role);
-  setStatus('status-resolution', `${layer.resolutionMeters} m`);
+  setStatus("status-layer", layer.role);
+  setStatus("status-resolution", `${layer.authoritativeResolutionMeters} m`);
 }
 
 // ------------------------------------------------------------------- boot
 
 function wireUi(): void {
-  $('btn-connect').addEventListener('click', () => void connect());
-  $('btn-estimate').addEventListener('click', () => void estimate());
-  $('btn-generate').addEventListener('click', () => void generate());
-  $('btn-export').addEventListener('click', () => void exportTerrain());
-  $('btn-validate').addEventListener('click', () => void validate());
-  $('btn-solar').addEventListener('click', () => void refreshSolar());
-  $('btn-undo').addEventListener('click', () => void undo());
-  $('btn-redo').addEventListener('click', () => void redo());
-  $('btn-history-refresh').addEventListener('click', () => void refreshHistory());
-  $('btn-history-replay').addEventListener('click', () => void replayHistory());
+  $("btn-connect").addEventListener("click", () => void connect());
+  $("btn-estimate").addEventListener("click", () => void estimate());
+  $("btn-generate").addEventListener("click", () => void generate());
+  $("btn-export").addEventListener("click", () => void exportTerrain());
+  $("btn-validate").addEventListener("click", () => void validate());
+  $("btn-solar").addEventListener("click", () => void refreshSolar());
+  $("cfg-solar-mode").addEventListener("change", updateSolarModeUi);
+  $("btn-undo").addEventListener("click", () => void undo());
+  $("btn-redo").addEventListener("click", () => void redo());
+  $("btn-history-refresh").addEventListener(
+    "click",
+    () => void refreshHistory(),
+  );
+  $("btn-history-replay").addEventListener("click", () => void replayHistory());
 
-  $('btn-new').addEventListener('click', () => {
-    ($('cfg-seed') as HTMLInputElement).value = `site-${Date.now().toString(36)}`;
+  $("btn-new").addEventListener("click", () => {
+    ($("cfg-seed") as HTMLInputElement).value =
+      `site-${Date.now().toString(36)}`;
     renderLayerTable();
   });
-  $('btn-save').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(buildConfig(), null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
+  $("btn-save").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(buildConfig(), null, 2)], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${($('cfg-terrain-id') as HTMLInputElement).value}.json`;
+    a.download = `${($("cfg-terrain-id") as HTMLInputElement).value}.json`;
     a.click();
   });
-  $('btn-load').addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/json';
+  $("btn-load").addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const cfg = JSON.parse(await file.text());
-      ($('cfg-terrain-id') as HTMLInputElement).value = cfg.terrainId ?? '';
-      ($('cfg-seed') as HTMLInputElement).value = cfg.seed ?? '';
-      ($('cfg-lat') as HTMLInputElement).value = String(cfg.site?.latitudeDeg ?? '');
-      ($('cfg-lon') as HTMLInputElement).value = String(cfg.site?.longitudeDeg ?? '');
+      try {
+        const cfg = JSON.parse(await file.text());
+        applyLoadedConfig(cfg);
+        log(
+          "export-result",
+          `loaded ${String(cfg.terrainId)} from ${file.name}`,
+          "pass",
+        );
+      } catch (e) {
+        log("export-result", `load failed: ${(e as Error).message}`, "fail");
+      }
     };
     input.click();
   });
 
-  ($('cfg-preset') as HTMLSelectElement).addEventListener('change', () => {
+  ($("cfg-preset") as HTMLSelectElement).addEventListener("change", () => {
     const p = currentPreset();
-    ($('cfg-lat') as HTMLInputElement).value = String(p.site.latitudeDeg);
-    ($('cfg-lon') as HTMLInputElement).value = String(p.site.longitudeDeg);
-    ($('cfg-dem-enabled') as HTMLInputElement).checked = p.demEnabled;
-    ($('cfg-crater-age') as HTMLInputElement).value = String(p.craters.surfaceAgeGyr);
-    ($('cfg-rock-k') as HTMLInputElement).value = String(
+    ($("cfg-lat") as HTMLInputElement).value = String(p.site.latitudeDeg);
+    ($("cfg-lon") as HTMLInputElement).value = String(p.site.longitudeDeg);
+    ($("cfg-dem-enabled") as HTMLInputElement).checked = p.demEnabled;
+    ($("cfg-crater-age") as HTMLInputElement).value = String(
+      p.craters.surfaceAgeGyr,
+    );
+    ($("cfg-rock-k") as HTMLInputElement).value = String(
       p.rocks.cumulativeFractionalAreaCovered,
     );
     renderLayerTable();
@@ -1123,56 +1595,82 @@ function wireUi(): void {
     clearGpuPreview();
   });
 
-  for (const id of ['viz-overlay', 'viz-camera', 'viz-wireframe', 'viz-grid', 'viz-tilebounds', 'viz-contours', 'viz-earthshine']) {
-    $(id).addEventListener('change', applyVisualization);
+  for (const id of [
+    "viz-overlay",
+    "viz-camera",
+    "viz-wireframe",
+    "viz-grid",
+    "viz-tilebounds",
+    "viz-contours",
+    "viz-earthshine",
+  ]) {
+    $(id).addEventListener("change", applyVisualization);
   }
 
-  ($('viz-gpu-preview') as HTMLInputElement).addEventListener('change', (e) => {
+  ($("viz-gpu-preview") as HTMLInputElement).addEventListener("change", (e) => {
     void setGpuPreviewEnabled((e.target as HTMLInputElement).checked);
   });
 
   // Sculpting and construction chips share one active-brush selection.
-  const brushRows = ['brush-buttons', 'construction-buttons'];
+  const brushRows = ["brush-buttons", "construction-buttons"];
   const allBrushButtons = () =>
-    brushRows.flatMap((id) => Array.from($(id).querySelectorAll('button')));
+    brushRows.flatMap((id) => Array.from($(id).querySelectorAll("button")));
   for (const btn of allBrushButtons()) {
-    btn.addEventListener('click', () => {
-      const brush = btn.getAttribute('data-brush');
+    btn.addEventListener("click", () => {
+      const brush = btn.getAttribute("data-brush");
       activeBrush = activeBrush === brush ? null : brush;
       for (const b of allBrushButtons()) {
-        b.classList.toggle('active', b.getAttribute('data-brush') === activeBrush);
+        b.classList.toggle(
+          "active",
+          b.getAttribute("data-brush") === activeBrush,
+        );
       }
       // A half-built polygon is meaningless under a non-polygon brush.
-      if (!POLYGON_KINDS.has(activeBrush ?? '')) clearPolygon(false);
+      if (!POLYGON_KINDS.has(activeBrush ?? "")) clearPolygon(false);
       updateBrushParamVisibility();
     });
   }
 
-  $('btn-polygon-apply').addEventListener('click', () => void applyPolygon());
-  $('btn-polygon-clear').addEventListener('click', () => clearPolygon(true));
-  window.addEventListener('keydown', (e) => {
+  $("btn-polygon-apply").addEventListener("click", () => void applyPolygon());
+  $("btn-polygon-clear").addEventListener("click", () => clearPolygon(true));
+  $("btn-brush-apply-coords").addEventListener("click", () => {
+    if (!activeBrush) {
+      $("edit-status").textContent =
+        "select an editing or construction tool first";
+      return;
+    }
+    const x = Number(($("brush-x") as HTMLInputElement).value);
+    const z = Number(($("brush-z") as HTMLInputElement).value);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      $("edit-status").textContent =
+        "coordinate target requires finite X and Z values";
+      return;
+    }
+    void applyBrushAt(x, z);
+  });
+  window.addEventListener("keydown", (e) => {
     if (!activeBrush || !POLYGON_KINDS.has(activeBrush)) return;
     // Never hijack Enter/Escape from a form field.
-    const tag = (document.activeElement?.tagName ?? '').toUpperCase();
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if (e.key === 'Enter') {
+    const tag = (document.activeElement?.tagName ?? "").toUpperCase();
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    if (e.key === "Enter") {
       e.preventDefault();
       void applyPolygon();
-    } else if (e.key === 'Escape') {
+    } else if (e.key === "Escape") {
       e.preventDefault();
       clearPolygon(true);
     }
   });
 
-  const canvas = $('canvas') as HTMLCanvasElement;
-  canvas.addEventListener('pointermove', (e) => {
+  const canvas = $("canvas") as HTMLCanvasElement;
+  canvas.addEventListener("pointermove", (e) => {
     const rect = canvas.getBoundingClientRect();
     const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     const hit = viewer.pick(ndcX, ndcY);
     if (hit) updateCursorReadout(hit.x, hit.z);
   });
-  canvas.addEventListener('pointerdown', (e) => {
+  canvas.addEventListener("pointerdown", (e) => {
     if (!activeBrush || e.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
     const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1182,10 +1680,10 @@ function wireUi(): void {
   });
 
   client.onStateChange = (state, detail) => {
-    const ind = $('connection-indicator');
+    const ind = $("connection-indicator");
     ind.className = `indicator ${state}`;
-    $('connection-label').textContent = state;
-    setStatus('status-sidecar', detail ? `${state} — ${detail}` : state);
+    $("connection-label").textContent = state;
+    setStatus("status-sidecar", detail ? `${state} — ${detail}` : state);
   };
 }
 
@@ -1197,22 +1695,23 @@ async function boot(): Promise<void> {
   // "not available" in the preview status line.
   await GpuPreview.preInit();
 
-  const canvas = $('canvas') as HTMLCanvasElement;
+  const canvas = $("canvas") as HTMLCanvasElement;
   viewer = new Viewer(canvas);
 
   const resize = () => {
-    const rect = ($('viewport') as HTMLElement).getBoundingClientRect();
+    const rect = ($("viewport") as HTMLElement).getBoundingClientRect();
     viewer.setSize(Math.max(1, rect.width), Math.max(1, rect.height));
   };
-  window.addEventListener('resize', resize);
+  window.addEventListener("resize", resize);
   resize();
 
   wireUi();
   renderLayerTable();
   renderProceduralRows();
+  updateSolarModeUi();
   applyVisualization();
-  // A plausible grazing angle until the ephemeris answers.
-  viewer.setSolar(80, 1.2);
+  // Direct light is authoritative data: keep it off until the ephemeris answers.
+  viewer.clearSolar();
 
   let frames = 0;
   let last = performance.now();
@@ -1221,9 +1720,12 @@ async function boot(): Promise<void> {
     frames++;
     const now = performance.now();
     if (now - last >= 1000) {
-      setStatus('perf-fps', String(frames));
-      setStatus('perf-draws', String(viewer.renderer.info.render.calls));
-      setStatus('perf-tris', viewer.renderer.info.render.triangles.toLocaleString());
+      setStatus("perf-fps", String(frames));
+      setStatus("perf-draws", String(viewer.renderer.info.render.calls));
+      setStatus(
+        "perf-tris",
+        viewer.renderer.info.render.triangles.toLocaleString(),
+      );
       frames = 0;
       last = now;
     }
@@ -1244,11 +1746,11 @@ async function boot(): Promise<void> {
     previewActive: false,
     previewMaxAbsDelta: null,
   };
-  document.body.setAttribute('data-ready', 'true');
+  document.body.setAttribute("data-ready", "true");
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => void boot());
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => void boot());
 } else {
   void boot();
 }

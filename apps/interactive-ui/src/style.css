@@ -18,6 +18,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -48,8 +49,11 @@ html, body {
 .brand {
   color: var(--accent);
   font-weight: 600;
-  margin-right: 10px;
+  margin: 0 10px 0 0;
+  font-size: 12px;
+  line-height: 1;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .spacer { flex: 1; }
@@ -159,6 +163,20 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
 .row { display: flex; gap: 6px; }
 .row button { flex: 1; }
 
+.coordinate-entry {
+  margin: 8px 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.coordinate-entry legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.coordinate-entry .row label { flex: 1; min-width: 0; }
+.coordinate-entry > button { width: 100%; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .chips button { padding: 3px 8px; font-size: 11px; }
 
@@ -200,6 +218,27 @@ tr.role-context td:first-child { color: var(--accent); }
 #viewport { position: relative; min-width: 0; background: #000; }
 #canvas { display: block; width: 100%; height: 100%; }
 
+.viewport-banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 20;
+  max-width: calc(100% - 24px);
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+}
+.viewport-banner.warning { background: #ffbf00; color: #1a1206; }
+.viewport-banner.night { background: #2b3a55; color: #cfe0ff; }
+.viewport-banner.unavailable { background: #651d28; color: #fff1f3; }
+.viewport-banner.warning:not([hidden]) + .viewport-banner.night { top: 44px; }
+.viewport-banner.warning:not([hidden]) ~ .viewport-banner.unavailable { top: 44px; }
+
 #legend {
   position: absolute;
   left: 12px; bottom: 12px;
@@ -236,6 +275,20 @@ tr.role-context td:first-child { color: var(--accent); }
 }
 #progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s linear; }
 #progress-stage { color: var(--muted); font-size: 11px; }
+
+/* Keyboard operation must be as legible as pointer hover. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input::placeholder { color: #747d89; opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  #progress-fill { transition: none; }
+}
 
 /* ------------------------------------------------------------ status bar */
 

@@ -3,8 +3,9 @@
  *
  * Drives the **addon** end to end against a live sidecar, in real headless
  * Godot: connect, generate a seeded terrain, import it, instantiate collision,
- * sample points, apply a delta, reload the affected tiles, and confirm the
- * physics surface actually moved.
+ * sample points, apply a sparse delta in memory, rebuild only intersecting
+ * chunks, and confirm the physics surface actually moved. It also forces a
+ * real semantic-mask tile fallback above the sparse cap.
  *
  * Running the real editor plugin scripts here also means a GDScript syntax
  * error in the dock or the plugin fails the suite rather than waiting to be
@@ -65,7 +66,7 @@ let sidecar: WebSocketServer;
 let report: Report;
 let stdout = '';
 
-/** Small three-tier site: real DEM, quick enough to run inside a test. */
+/** Small two-tier site derived from the real Site01 DEM, quick enough for CI. */
 const config = {
   schemaVersion: '1.0.0',
   terrainId: 'integration_site',
@@ -131,7 +132,6 @@ describe.skipIf(!available)('Godot addon integration', () => {
       );
     });
     stdout = `${result.stdout}\n${result.stderr}`;
-
     if (!existsSync(outPath)) {
       throw new Error(`Godot wrote no result file. Output was:\n${stdout}`);
     }
@@ -159,7 +159,7 @@ describe.skipIf(!available)('Godot addon integration', () => {
   it('connects the addon client to the sidecar over the real protocol', () => {
     const step = report.steps.find((s) => s.step === 'connect to sidecar');
     expect(step?.passed).toBe(true);
-    expect(step?.detail).toBe('1.0.0');
+    expect(step?.detail).toBe('2.0.0');
   });
 
   it('imports the export and builds non-overlapping collision', () => {
@@ -171,6 +171,28 @@ describe.skipIf(!available)('Godot addon integration', () => {
 
   it('carries the coordinate contract into Godot', () => {
     expect(report.steps.find((s) => s.step === 'coordinate contract preserved')?.passed).toBe(true);
+  });
+
+  it('requires every live coordinate field and binds the local origin', () => {
+    expect(
+      report.steps.find((s) => s.step === 'live identity requires every coordinate field')?.passed,
+    ).toBe(true);
+    expect(report.steps.find((s) => s.step === 'live identity binds the local origin')?.passed).toBe(
+      true,
+    );
+  });
+
+  it('binds every available source-projection field', () => {
+    expect(report.steps.find((s) => s.step === 'live identity binds source projection')?.passed).toBe(
+      true,
+    );
+  });
+
+  it('binds full provenance and the real Site01 source identity', () => {
+    expect(report.steps.find((s) => s.step === 'live identity binds provenance')?.passed).toBe(true);
+    expect(report.steps.find((s) => s.step === 'live identity binds the real DEM source')?.passed).toBe(
+      true,
+    );
   });
 
   it('agrees with the sidecar on elevation through collision geometry', () => {
@@ -190,17 +212,56 @@ describe.skipIf(!available)('Godot addon integration', () => {
     expect(err).toBeLessThan(1);
   });
 
+  it('rejects corrupt rock transfer bytes and invalid response ordering', () => {
+    expect(
+      report.steps.find((s) => s.step === 'rock transfer rejects corrupt bytes and invalid ordering')
+        ?.passed,
+    ).toBe(true);
+  });
+
+  it('rolls back partial live deltas before any scene refresh', () => {
+    for (const stepName of [
+      'semantic apply failure rolls back the height transaction',
+      'semantic fetch failure rolls back the height transaction',
+      'result checksum failure rolls back before scene refresh',
+      'rock transform corruption rolls back terrain before commit',
+      'zero-rock delta rejects a changed rock digest',
+    ]) {
+      expect(report.steps.find((s) => s.step === stepName)?.passed).toBe(true);
+    }
+  });
+
+  it('recovers generation controls when a chained dock request cannot be sent', () => {
+    expect(report.steps.find((s) => s.step === 'dock recovers when status send fails')?.passed).toBe(
+      true,
+    );
+    expect(
+      report.steps.find((s) => s.step === 'dock recovers when chained export send fails')?.passed,
+    ).toBe(true);
+  });
+
   it('keeps the edited terrain valid on re-export', () => {
     expect(report.steps.find((s) => s.step === 'edited terrain still validates')?.passed).toBe(true);
   });
 
-  it('reloads affected tiles and moves the collision surface with the edit', () => {
+  it('sparse-syncs affected chunks and moves the collision surface with the edit', () => {
     // The decisive check: after an excavation the *physics* surface must drop,
     // not just the exported file. Stale collision would let a rover drive on
     // ground that no longer exists.
-    expect(report.steps.find((s) => s.step === 'reload affected tiles')?.passed).toBe(true);
+    expect(report.steps.find((s) => s.step === 'sparse delta syncs without re-export')?.passed).toBe(
+      true,
+    );
+    expect(report.steps.find((s) => s.step === 'only intersecting chunks refresh')?.passed).toBe(
+      true,
+    );
     expect(report.steps.find((s) => s.step === 'sidecar recorded the excavation')?.passed).toBe(true);
     expect(report.steps.find((s) => s.step === 'collision surface moved with it')?.passed).toBe(true);
     expect(report.steps.find((s) => s.step === 'collision actually changed')?.passed).toBe(true);
+  });
+
+  it('tile-falls back an oversized semantic edit without diverging from the server', () => {
+    expect(
+      report.steps.find((s) => s.step === 'oversized semantic edit uses tile fallback')?.passed,
+    ).toBe(true);
   });
 });

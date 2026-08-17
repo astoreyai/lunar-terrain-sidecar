@@ -17,8 +17,17 @@
  * is a tangent plane, and the export manifest's `datum_note` says so.)
  */
 
-import { TerrainError, ERROR_CODES } from '@lts/shared-types';
-import { forward, scaleFactorAtLatitude } from './projection.js';
+import {
+  TerrainError,
+  ERROR_CODES,
+  type ProjectionMetadata,
+} from '@lts/shared-types';
+import {
+  forward,
+  scaleFactorAtLatitude,
+  SOUTH_POLAR_LOLA,
+  type PolarStereographicParams,
+} from './projection.js';
 import type { DemRaster } from './source.js';
 
 export interface LocalFrame {
@@ -42,29 +51,60 @@ export interface LocalFrame {
 /**
  * Build the local tangent frame at a selenographic site.
  *
- * For the south polar aspect a point projects to `ρ(sin λ, cos λ)`, so:
+ * For the south polar aspect a point projects to `ρ(sin Δλ, cos Δλ)`, so:
  *   - local **north** (increasing latitude, i.e. increasing ρ) is
- *     `(sin λ, cos λ)` — radially *outward* from the pole;
- *   - local **east** (increasing longitude) is `(cos λ, −sin λ)`;
+ *     `(sin Δλ, cos Δλ)` — radially *outward* from the pole;
+ *   - local **east** (increasing longitude) is `(cos Δλ, −sin Δλ)`;
  *   - local **+Z is south** (ADR 0002), so it is `−north`.
  */
-export function buildLocalFrame(latitudeDeg: number, longitudeDeg: number): LocalFrame {
-  const { x, y } = forward(latitudeDeg, longitudeDeg);
-  const lam = (longitudeDeg * Math.PI) / 180;
+export function buildLocalFrame(
+  latitudeDeg: number,
+  longitudeDeg: number,
+  projection: PolarStereographicParams = SOUTH_POLAR_LOLA,
+): LocalFrame {
+  const { x, y } = forward(latitudeDeg, longitudeDeg, projection);
+  const longitudeFromMeridianDeg =
+    projection.centralMeridianDeg === 0
+      ? longitudeDeg
+      : longitudeDeg - projection.centralMeridianDeg;
+  const lam = (longitudeFromMeridianDeg * Math.PI) / 180;
   const sinL = Math.sin(lam);
   const cosL = Math.cos(lam);
+
+  const eastX = cosL;
+  const eastY = projection.hemisphere === -1 ? -sinL : sinL;
+  const southX = projection.hemisphere === -1 ? -sinL : sinL;
+  const southY = -cosL;
 
   return {
     latitudeDeg,
     longitudeDeg,
     originProjectedX: x,
     originProjectedY: y,
-    eastX: cosL,
-    eastY: -sinL,
-    // south = -north = -(sin λ, cos λ)
-    southX: -sinL,
-    southY: -cosL,
-    projectionScale: scaleFactorAtLatitude(latitudeDeg),
+    eastX,
+    eastY,
+    // South-polar aspect: south = -north = -(sin Δλ, cos Δλ).
+    southX,
+    southY,
+    projectionScale: scaleFactorAtLatitude(latitudeDeg, projection),
+  };
+}
+
+/** Projection declaration paired with the exact projected local-frame origin. */
+export function projectionMetadataForFrame(
+  projection: PolarStereographicParams,
+  frame: LocalFrame,
+): ProjectionMetadata {
+  return {
+    type: 'polar_stereographic',
+    latitudeOfOriginDeg: projection.hemisphere === -1 ? -90 : 90,
+    centralMeridianDeg: projection.centralMeridianDeg,
+    scaleFactor: projection.scaleFactor,
+    falseEastingM: projection.falseEastingM,
+    falseNorthingM: projection.falseNorthingM,
+    bodyRadiusM: projection.radiusM,
+    originEastingM: frame.originProjectedX,
+    originNorthingM: frame.originProjectedY,
   };
 }
 

@@ -7,12 +7,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import { existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { WebSocketServer } from 'ws';
 import { startServer } from '../apps/headless-server/src/server.js';
-import { METHODS, PROTOCOL_VERSION, RPC_CODES } from '@lts/terrain-protocol';
+import {
+  METHODS,
+  PROTOCOL_VERSION,
+  ROCK_TRANSFER_ENCODING,
+  RPC_CODES,
+} from '@lts/terrain-protocol';
 
 const PORT = 8791;
 const WORK = resolve(__dirname, '../.test-artifacts/protocol');
@@ -81,19 +87,77 @@ describe('sidecar protocol', () => {
     expect(r.result.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
+  it('rejects browser WebSockets from non-local origins', async () => {
+    const attacker = new WebSocket(`ws://127.0.0.1:${PORT}`, {
+      origin: 'https://untrusted.example',
+    });
+    const status = await new Promise<number>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error('cross-origin handshake did not finish')), 5_000);
+      attacker.once('unexpected-response', (_request, response) => {
+        clearTimeout(timer);
+        response.resume();
+        resolvePromise(response.statusCode ?? 0);
+      });
+      attacker.once('open', () => {
+        clearTimeout(timer);
+        attacker.close();
+        reject(new Error('untrusted browser origin was accepted'));
+      });
+      attacker.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    expect(status).toBe(403);
+  });
+
   it('declares its capabilities honestly', async () => {
     const r = await rpc('terrain.capabilities');
     expect(r.result.methods).toEqual([...METHODS]);
     expect(r.result.coordinateSystem.north_axis).toBe('-Z');
+    expect(r.result.solarModes).toContain('ephemeris_de');
     // Anything unbuilt is named as unbuilt rather than silently absent.
     expect(r.result.notImplemented).toBeTruthy();
     expect(Object.keys(r.result.notImplemented).length).toBeGreaterThan(0);
+  });
+
+  it('reports where the Site01 DEM actually is, so clients need no machine-specific default', async () => {
+    // The browser UI cannot read the environment; it asks the sidecar. The
+    // sidecar resolves LTS_SITE01_DEM (or its documented fallback), checks the
+    // file exists, and reports the path or null — never a path that would fail.
+    const r = await rpc('terrain.capabilities');
+    const datasets = r.result.datasets;
+    expect(datasets).toBeTruthy();
+    if (existsSync(CONCURRENCY_DEM)) {
+      expect(datasets.site01DemPath).toBe(CONCURRENCY_DEM);
+      expect(['env:LTS_SITE01_DEM', 'default']).toContain(datasets.site01DemSource);
+    } else {
+      expect(datasets.site01DemPath).toBeNull();
+      expect(datasets.site01DemSource).toBe('none');
+    }
   });
 
   it('rejects an unknown method with METHOD_NOT_FOUND', async () => {
     const r = await rpc('terrain.doesNotExist');
     expect(r.error.code).toBe(RPC_CODES.METHOD_NOT_FOUND);
     expect(r.error.data.supported).toContain('terrain.generate');
+  });
+
+  it('rejects JSON null as INVALID_REQUEST without dropping the connection', async () => {
+    const response = await new Promise<any>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout on literal null request')), 5_000);
+      const onMessage = (raw: WebSocket.RawData) => {
+        const message = JSON.parse(raw.toString());
+        if (message.id !== null) return;
+        clearTimeout(timer);
+        socket.off('message', onMessage);
+        resolvePromise(message);
+      };
+      socket.on('message', onMessage);
+      socket.send('null');
+    });
+    expect(response.error.code).toBe(RPC_CODES.INVALID_REQUEST);
+    expect((await rpc('terrain.health')).result.status).toBe('ok');
   });
 
   it('validates a good configuration', async () => {
@@ -163,6 +227,94 @@ describe('sidecar protocol', () => {
     expect(r.result.provenance.seeds.master).toBe('protocol-seed');
   });
 
+  it('streams a bounded, explicitly modelled rock-instance preview', async () => {
+    const dataset = (await rpc('terrain.getDataset')).result;
+    const r = await rpc('terrain.getRocks', { maxInstances: 8 });
+    expect(r.result).toMatchObject({
+      terrainId: dataset.terrainId,
+      seed: dataset.seed,
+      datasetRevision: dataset.datasetRevision,
+      sequenceNumber: dataset.sequenceNumber,
+    });
+    expect(r.result.baseline).toEqual(dataset.baseline);
+    expect(r.result.totalCount).toBeGreaterThan(8);
+    expect(r.result.returnedCount).toBe(8);
+    expect(r.result.truncated).toBe(true);
+    expect(r.result.transferEncoding).toBe(ROCK_TRANSFER_ENCODING);
+    expect(r.result.transferSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.result.transferSha256).not.toBe(r.result.baseline.rocks.transferSha256);
+    expect(Buffer.from(r.result.transferData, 'base64').byteLength).toBeGreaterThan(0);
+    expect(r.result.provenance).toMatch(/modelled|modeled/i);
+    expect(r.result.provenance).toMatch(/not measured/i);
+    expect(r.result.rocks).toHaveLength(8);
+    expect(r.result.rocks.map((rock: { id: string }) => rock.id)).toEqual(
+      r.result.rocks.map((rock: { id: string }) => rock.id).toSorted(),
+    );
+    for (const rock of r.result.rocks) {
+      expect(rock.position_m).toHaveLength(3);
+      expect(rock.rotation_quaternion).toHaveLength(4);
+      expect(rock.scale_m).toHaveLength(3);
+      expect(typeof rock.physical).toBe('boolean');
+    }
+
+    const one = await rpc('terrain.getRocks', { maxInstances: 1 });
+    expect(one.result.rocks).toHaveLength(1);
+    expect(one.result.rocks[0].physical).toBe(true);
+
+    const complete = await rpc('terrain.getRocks', { maxInstances: 50_000 });
+    expect(complete.result.truncated).toBe(false);
+    const completeTransfer = Buffer.from(complete.result.transferData, 'base64');
+    expect(createHash('sha256').update(completeTransfer).digest('hex')).toBe(
+      complete.result.transferSha256,
+    );
+    expect(complete.result.transferSha256).toBe(dataset.baseline.rocks.transferSha256);
+    expect(complete.result.rocks.map((rock: { id: string }) => rock.id)).toEqual(
+      complete.result.rocks.map((rock: { id: string }) => rock.id).toSorted(),
+    );
+
+    const invalid = await rpc('terrain.getRocks', { maxInstances: 0 });
+    expect(invalid.error.code).toBe(RPC_CODES.TERRAIN_ERROR);
+    expect(invalid.error.data.code).toBe('TERRAIN_INVALID_CONFIG');
+  });
+
+  it('returns one opaque, complete baseline identity on dataset and sync metadata', async () => {
+    const dataset = (await rpc('terrain.getDataset')).result;
+    expect(dataset.baseline).toMatchObject({
+      schemaVersion: 1,
+      immutableIdentitySha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      worldStateSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      rocks: {
+        totalCount: dataset.features.rocks,
+        physicalCount: expect.any(Number),
+        physicsSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        transferSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    });
+    expect(dataset.baseline.layers).toHaveLength(dataset.layers.length);
+    for (const layer of dataset.baseline.layers) {
+      expect(layer).toMatchObject({
+        layerId: expect.any(String),
+        heightSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        semanticSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      expect(
+        layer.disturbanceSha256 === null || /^[0-9a-f]{64}$/.test(layer.disturbanceSha256),
+      ).toBe(true);
+      expect(
+        layer.elevationSourceSha256 === null ||
+          /^[0-9a-f]{64}$/.test(layer.elevationSourceSha256),
+      ).toBe(true);
+    }
+
+    const poll = (
+      await rpc('terrain.getChangedSince', {
+        datasetRevision: dataset.datasetRevision,
+        sequenceNumber: dataset.sequenceNumber,
+      })
+    ).result;
+    expect(poll.baseline).toEqual(dataset.baseline);
+  });
+
   it('answers point queries consistently with each other', async () => {
     const h = (await rpc('terrain.getHeight', { x: 1.25, z: -2.5 })).result;
     expect(Number.isFinite(h.elevationM)).toBe(true);
@@ -223,6 +375,18 @@ describe('sidecar protocol', () => {
     const buf = Buffer.from(t.data, 'base64');
     expect(buf.length).toBe(16 * 16 * 4);
     expect(Number.isFinite(buf.readFloatLE(0))).toBe(true);
+
+    for (const width of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const rejected = await rpc('terrain.getTile', {
+        layerId: 'operational-1',
+        col0: 0,
+        row0: 0,
+        width,
+        height: 1,
+      });
+      expect(rejected.error.code).toBe(RPC_CODES.TERRAIN_ERROR);
+      expect(rejected.error.data.code).toBe('TERRAIN_INVALID_CONFIG');
+    }
   });
 
   it('applies an edit and returns a replayable delta', async () => {
@@ -242,6 +406,11 @@ describe('sidecar protocol', () => {
 
     expect(r.delta.operations).toHaveLength(1);
     expect(r.delta.previousChecksum).not.toBe(r.delta.resultingChecksum);
+    expect(r.delta.previousRockTransferSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.delta.resultingRockTransferSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.delta.rocksReseated === 0).toBe(
+      r.delta.previousRockTransferSha256 === r.delta.resultingRockTransferSha256,
+    );
     expect(r.delta.changedTiles.length).toBeGreaterThan(0);
     expect(r.delta.affectedBounds.minX).toBeLessThan(0);
     expect(r.delta.massBalance.removedVolumeM3).toBeGreaterThan(0);
@@ -390,4 +559,66 @@ describe('sidecar protocol', () => {
     });
     expect(reply.error.code).toBe(RPC_CODES.PARSE_ERROR);
   });
+
+  it.skipIf(!existsSync(CONCURRENCY_DEM))(
+    'keeps the installed real-DEM dataset when a later job fails during export',
+    async () => {
+      const goodDirectory = `${WORK}-atomic-good`;
+      rmSync(goodDirectory, { recursive: true, force: true });
+      const realConfig = {
+        terrainId: 'atomic_known_good',
+        seed: 'atomic-real-dem',
+        outputDirectory: goodDirectory,
+        site: { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 },
+        layers: [
+          { role: 'context', widthMeters: 20, lengthMeters: 20, resolutionMeters: 5 },
+        ],
+        dem: {
+          enabled: true,
+          path: CONCURRENCY_DEM,
+          applyToRoles: ['context'],
+          effectiveResolutionMeters: 17.5,
+        },
+        proceduralStack: [],
+        craters: { enabled: false },
+        rocks: { enabled: false },
+        regolith: { enabled: false },
+        solar: {
+          mode: 'ephemeris',
+          epochUtc: '2026-08-03T00:00:00Z',
+          computeHorizon: false,
+        },
+      };
+
+      const waitForTerminalStatus = async (jobId: string): Promise<any> => {
+        for (let i = 0; i < 600; i++) {
+          const status = (await rpc('terrain.getStatus', { jobId })).result;
+          if (['complete', 'failed', 'cancelled'].includes(status.status)) return status;
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+        }
+        throw new Error(`job ${jobId} did not reach a terminal state`);
+      };
+
+      const first = await rpc('terrain.generate', { config: realConfig });
+      expect((await waitForTerminalStatus(first.result.jobId)).status).toBe('complete');
+
+      // package.json is a file, so using a child path fails quickly with
+      // ENOTDIR on every supported platform; no special filesystem is involved.
+      const impossibleDirectory = join(resolve(__dirname, '../package.json'), 'child');
+      const second = await rpc('terrain.generate', {
+        config: {
+          ...realConfig,
+          terrainId: 'atomic_must_not_install',
+          outputDirectory: impossibleDirectory,
+        },
+      });
+      const failed = await waitForTerminalStatus(second.result.jobId);
+      expect(failed.status).toBe('failed');
+      expect(failed.error.code).toBe('TERRAIN_OUTPUT_NOT_WRITABLE');
+
+      const live = (await rpc('terrain.getDataset')).result;
+      expect(live.terrainId).toBe('atomic_known_good');
+    },
+    120_000,
+  );
 });

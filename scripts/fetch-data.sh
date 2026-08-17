@@ -5,8 +5,9 @@
 #        de440s.bsp                planetary ephemeris, 1849-2150
 #        moon_pa_de440_200625.bpc  integrated lunar Principal Axis orientation
 #        moon_de440_250416.tf      frames kernel with the fixed PA->ME rotation
-#   2. PGDA/LOLA 5 m/px south-polar DEM, Site01 (~41 MB), the DEM the
-#      shipped example site and presets reference.
+#   2. PGDA/LOLA 5 m/px south-polar DEMs: Site01 (~41 MB), the DEM the
+#      shipped example site and presets reference, plus Shoemaker (~64 MB),
+#      the independent reader-generality product used by the real-data suite.
 #
 # All URLs below were verified reachable (HTTP 200, correct content type)
 # on 2026-08-03. Checksums are SHA-256 of the copies this repository was
@@ -40,6 +41,7 @@ KERNELS=(
 )
 DEMS=(
   "Site01_final_adj_5mpp_surf.tif|$PGDA_BASE/Site01/Site01_final_adj_5mpp_surf.tif|3ba7b97cb00a2bcf21189c3aeb535f65afc21207154ab9f0d43c5bdc1f7e747e"
+  "Shoemaker_final_adj_5mpp_surf.tif|$PGDA_BASE/Shoemaker/Shoemaker_final_adj_5mpp_surf.tif|75329262a6dbe37e4370adcf23ec3854396c9d3e911a682d76c170178a0b8290"
 )
 # LOLA gridded 120 m/px polar product (75S-90S), used by the opt-in far-field
 # horizon ring (ADR 0006). 116 MB image + detached label.
@@ -106,8 +108,9 @@ Point the tools at them:
 
      or per-config:  "solar": { "kernelDirectory": "$ABS_SPICE", ... }
 
-  2. PGDA DEM. The example config and UI presets reference the development
-     machine's dataset store. Either edit the config's dem.path:
+  2. PGDA DEMs. Site01 is the example/UI anchor; Shoemaker is the independent
+     reader-generality check. Both copies above are checksum-pinned. To use
+     Site01 outside the test suite, edit the config's dem.path:
 
        "dem": { "path": "$ABS_DEM/Site01_final_adj_5mpp_surf.tif", ... }
        (examples/south_pole_site_01/config.json)
@@ -117,6 +120,9 @@ Point the tools at them:
 
        export LTS_SITE01_DEM="$ABS_DEM/Site01_final_adj_5mpp_surf.tif"
        export LTS_LDEM_75S="$ABS_LDEM/ldem_75s_120m.lbl"
+
+     The sidecar (npm run serve) reports LTS_SITE01_DEM to the browser UI in
+     terrain.capabilities, so the UI's DEM path field fills itself on connect.
 
      Note: editing dem.path changes the canonical configuration hash recorded
      in exports (the path is part of the config); the generated terrain bytes
@@ -129,7 +135,7 @@ Point the tools at them:
      or per-request:  "farField": { "demPath": "$ABS_LDEM/ldem_75s_120m.lbl" }
 
 Other PGDA 5 m/px sites (Site04, Site06, Site07, Site11, Site20, Site23,
-Haworth, Shoemaker, DM2) follow the same URL pattern:
+Haworth, DM2) follow the same URL pattern:
   $PGDA_BASE/<Name>/<Name>_final_adj_5mpp_surf.tif
 No checksums are recorded here for those; verify against
 https://pgda.gsfc.nasa.gov/products/78 yourself.

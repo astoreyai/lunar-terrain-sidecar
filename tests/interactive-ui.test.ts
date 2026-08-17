@@ -11,20 +11,28 @@
  * "the terrain rendered".
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { chromium, type Browser, type Page } from 'playwright';
-import { createServer, type ViteDevServer } from 'vite';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import type { WebSocketServer } from 'ws';
-import { startServer } from '../apps/headless-server/src/server.js';
-import { PerlinNoise2D, deriveSeed } from '../packages/terrain-core/src/index.js';
-import { buildPermTable } from '../apps/interactive-ui/src/gpuPreview.js';
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { chromium, type Browser, type Page } from "playwright";
+import { createServer, type ViteDevServer } from "vite";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { WebSocketServer } from "ws";
+import { startServer } from "../apps/headless-server/src/server.js";
+import {
+  PerlinNoise2D,
+  deriveSeed,
+} from "../packages/terrain-core/src/index.js";
+import { buildPermTable } from "../apps/interactive-ui/src/gpuPreview.js";
+import {
+  DEFAULT_KERNEL_DIRECTORY,
+  DE_PCK_FILENAME,
+  DE_SPK_FILENAME,
+} from "@lts/lunar-solar";
 
-const REPO = resolve(__dirname, '..');
-const UI_ROOT = join(REPO, 'apps/interactive-ui');
-const SHOTS = join(REPO, '.test-artifacts/ui');
-import { SITE01_DEM as DEM } from './paths.js';
+const REPO = resolve(__dirname, "..");
+const UI_ROOT = join(REPO, "apps/interactive-ui");
+const SHOTS = join(REPO, ".test-artifacts/ui");
+import { SITE01_DEM as DEM } from "./paths.js";
 const SIDECAR_PORT = 8793;
 const UI_PORT = 5199;
 
@@ -34,7 +42,7 @@ const UI_PORT = 5199;
  * Solar elevation there peaks at 2.05 deg and is negative much of the month, so
  * the lit-render checks must pick a time when there is light to see by.
  */
-const LIT_EPOCH = '2026-01-01T00:00:00Z';
+const LIT_EPOCH = "2026-01-01T00:00:00Z";
 
 let sidecar: WebSocketServer;
 let vite: ViteDevServer;
@@ -43,12 +51,21 @@ let page: Page;
 let consoleErrors: string[] = [];
 
 const demAvailable = existsSync(DEM);
+// The sidecar under test is told where the DEM is through the same variable a
+// fresh checkout uses. When the environment does not set it, a symlink under
+// .test-artifacts stands in for "the DEM lives somewhere other than the page's
+// built-in default", which is exactly the case the UI must handle.
+const UI_DEM_DIR = join(REPO, ".test-artifacts/ui-dem");
+const UI_DEM = process.env.LTS_SITE01_DEM ?? join(UI_DEM_DIR, "Site01_final_adj_5mpp_surf.tif");
+const deKernelsAvailable =
+  existsSync(join(DEFAULT_KERNEL_DIRECTORY, DE_SPK_FILENAME)) &&
+  existsSync(join(DEFAULT_KERNEL_DIRECTORY, DE_PCK_FILENAME));
 
 /** Fraction of non-black pixels in the canvas — proof something rendered. */
 async function litPixelFraction(p: Page): Promise<number> {
   return p.evaluate(() => {
-    const canvas = document.getElementById('canvas') as HTMLCanvasElement;
-    const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
     if (!gl) return -1;
     const w = canvas.width;
     const h = canvas.height;
@@ -62,14 +79,13 @@ async function litPixelFraction(p: Page): Promise<number> {
   });
 }
 
-
 /** Plain-Playwright helpers: vitest's expect has no Playwright matchers. */
 async function isVisible(p: Page, selector: string): Promise<boolean> {
   return p.locator(selector).isVisible();
 }
 
 async function textOf(p: Page, selector: string): Promise<string> {
-  return (await p.locator(selector).textContent()) ?? '';
+  return (await p.locator(selector).textContent()) ?? "";
 }
 
 /** Wait until an element's text contains `needle`, or throw with what it held. */
@@ -80,30 +96,45 @@ async function waitForText(
   timeout = 30_000,
 ): Promise<string> {
   const deadline = Date.now() + timeout;
-  let last = '';
+  let last = "";
   while (Date.now() < deadline) {
     last = await textOf(p, selector);
     if (last.includes(needle)) return last;
     await p.waitForTimeout(200);
   }
-  throw new Error(`timed out waiting for ${selector} to contain ${JSON.stringify(needle)}; last value was ${JSON.stringify(last)}`);
+  throw new Error(
+    `timed out waiting for ${selector} to contain ${JSON.stringify(needle)}; last value was ${JSON.stringify(last)}`,
+  );
 }
 
 /** Wait until an element's class list contains `cls`. */
-async function waitForClass(p: Page, selector: string, cls: string, timeout = 30_000): Promise<void> {
+async function waitForClass(
+  p: Page,
+  selector: string,
+  cls: string,
+  timeout = 30_000,
+): Promise<void> {
   const deadline = Date.now() + timeout;
-  let last = '';
+  let last = "";
   while (Date.now() < deadline) {
-    last = (await p.locator(selector).getAttribute('class')) ?? '';
+    last = (await p.locator(selector).getAttribute("class")) ?? "";
     if (last.split(/\s+/).includes(cls)) return;
     await p.waitForTimeout(200);
   }
-  throw new Error(`timed out waiting for ${selector} to have class ${cls}; last was ${JSON.stringify(last)}`);
+  throw new Error(
+    `timed out waiting for ${selector} to have class ${cls}; last was ${JSON.stringify(last)}`,
+  );
 }
 
-describe.skipIf(!demAvailable)('interactive UI', () => {
+describe.skipIf(!demAvailable)("interactive UI", () => {
   beforeAll(async () => {
     mkdirSync(SHOTS, { recursive: true });
+    if (!process.env.LTS_SITE01_DEM) {
+      rmSync(UI_DEM_DIR, { recursive: true, force: true });
+      mkdirSync(UI_DEM_DIR, { recursive: true });
+      symlinkSync(DEM, UI_DEM);
+      process.env.LTS_SITE01_DEM = UI_DEM;
+    }
 
     sidecar = await startServer(SIDECAR_PORT);
     // Configured inline rather than via the app's vite.config.ts, whose
@@ -111,8 +142,11 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     vite = await createServer({
       root: UI_ROOT,
       configFile: false,
-      server: { port: UI_PORT, strictPort: true, host: '127.0.0.1' },
-      logLevel: 'error',
+      // No file watching: the suite never edits sources while running, and a
+      // watcher costs one inotify instance per directory — enough to fail
+      // with EMFILE on a busy workstation or CI runner.
+      server: { port: UI_PORT, strictPort: true, host: "127.0.0.1", watch: null },
+      logLevel: "error",
     });
     await vite.listen();
 
@@ -121,18 +155,18 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     // not have, and a test suite should not require network access to run.
     const executablePath = [
       process.env.LTS_BROWSER,
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium',
+      "/usr/bin/google-chrome",
+      "/usr/bin/chromium",
     ].find((p) => p && existsSync(p));
 
     browser = await chromium.launch({
       executablePath,
       args: [
         // Software GL so this runs on a headless box with no display.
-        '--use-gl=swiftshader',
-        '--enable-unsafe-swiftshader',
-        '--disable-gpu-sandbox',
-        '--no-sandbox',
+        "--use-gl=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--disable-gpu-sandbox",
+        "--no-sandbox",
         // Expose navigator.gpu for the (non-authoritative) GPU preview tests.
         // Verified empirically on this machine (Chrome 151 headless): without
         // the flag navigator.gpu is absent entirely; with it, a plain
@@ -140,21 +174,22 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
         // adapter (forceFallbackAdapter: true) yields a working compute
         // device. '--enable-features=Vulkan' proved unnecessary and would
         // clobber Playwright's own --enable-features switch.
-        '--enable-unsafe-webgpu',
+        "--enable-unsafe-webgpu",
       ],
     });
     page = await browser.newPage({ viewport: { width: 1600, height: 950 } });
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
     });
-    page.on('pageerror', (err) => consoleErrors.push(String(err)));
+    page.on("pageerror", (err) => consoleErrors.push(String(err)));
     // Record which resource failed, so a 404 is diagnosable rather than a
     // bare "Failed to load resource".
-    page.on('response', (r) => {
-      if (r.status() >= 400) consoleErrors.push(`HTTP ${r.status()} ${r.url()}`);
+    page.on("response", (r) => {
+      if (r.status() >= 400)
+        consoleErrors.push(`HTTP ${r.status()} ${r.url()}`);
     });
 
-    await page.goto(`http://127.0.0.1:${UI_PORT}/`, { waitUntil: 'load' });
+    await page.goto(`http://127.0.0.1:${UI_PORT}/`, { waitUntil: "load" });
     await page.waitForSelector('body[data-ready="true"]', { timeout: 60_000 });
     // 300 s: the boot (generate + Vite + Chromium) takes ~80 s alone on an
     // idle machine; a full-suite run shares the CPU with eight other files,
@@ -168,151 +203,458 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     await new Promise<void>((res) => sidecar.close(() => res()));
   });
 
-  it('boots without console errors', () => {
-    if (consoleErrors.length) console.log('CONSOLE ERRORS:', JSON.stringify(consoleErrors, null, 2));
+  it("boots without console errors", () => {
+    if (consoleErrors.length)
+      console.log("CONSOLE ERRORS:", JSON.stringify(consoleErrors, null, 2));
     expect(consoleErrors).toEqual([]);
   });
 
-  it('creates a WebGL context and renders a frame', async () => {
+  it("creates a WebGL context and renders a frame", async () => {
     const fraction = await litPixelFraction(page);
     // Before terrain loads the scene is empty black sky, so this only proves
     // the context exists and readback works.
     expect(fraction).toBeGreaterThanOrEqual(0);
   });
 
-  it('shows every status field the spec requires', async () => {
+  it("shows every status field the spec requires", async () => {
     // Spec §23: seed, selected layer, resolution, dimensions, cursor,
     // elevation, memory estimate and sidecar status must always be visible.
     for (const id of [
-      'status-job',
-      'status-memory',
-      'status-layer',
-      'status-resolution',
-      'status-dimensions',
-      'status-cursor',
-      'status-elevation',
-      'status-seed',
-      'status-sidecar',
+      "status-job",
+      "status-memory",
+      "status-layer",
+      "status-resolution",
+      "status-dimensions",
+      "status-cursor",
+      "status-elevation",
+      "status-seed",
+      "status-sidecar",
     ]) {
       expect(await isVisible(page, `#${id}`), id).toBe(true);
     }
   });
 
-  it('renders every required panel', async () => {
+  it("exposes keyboard focus and announces changing status", async () => {
+    expect(await page.locator("h1").count()).toBe(1);
+    expect(
+      await page.locator("#sidecar-url").getAttribute("aria-label"),
+    ).toBeTruthy();
+    expect(
+      await page.locator("#connection-indicator").getAttribute("role"),
+    ).toBe("status");
+    expect(
+      await page.locator("#connection-indicator").getAttribute("aria-live"),
+    ).toBe("polite");
+    expect(await page.locator("#progress-overlay").getAttribute("role")).toBe(
+      "progressbar",
+    );
+
+    await page.locator("#btn-connect").focus();
+    const focus = await page.locator("#btn-connect").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        style: style.outlineStyle,
+        width: parseFloat(style.outlineWidth),
+      };
+    });
+    expect(focus.style).not.toBe("none");
+    expect(focus.width).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reveals the kernel path only for the DE440 solar mode", async () => {
+    expect(await isVisible(page, "#cfg-kernel-row")).toBe(false);
+    await page.selectOption("#cfg-solar-mode", "ephemeris_de");
+    expect(await isVisible(page, "#cfg-kernel-row")).toBe(true);
+    await page.selectOption("#cfg-solar-mode", "ephemeris");
+    expect(await isVisible(page, "#cfg-kernel-row")).toBe(false);
+  });
+
+  it("round-trips every UI-authored configuration field through Load", async () => {
+    const original = await page.evaluate(() =>
+      (
+        window as unknown as {
+          __lts: { buildConfig(): Record<string, unknown> };
+        }
+      ).__lts.buildConfig(),
+    );
+    await page.selectOption("#cfg-preset", "rover_test_pad");
+    await page.fill("#cfg-terrain-id", "roundtrip_fields");
+    await page.fill("#cfg-seed", "roundtrip-fields-seed");
+    await page.fill(
+      "#cfg-output",
+      join(REPO, ".test-artifacts/ui-roundtrip-fields"),
+    );
+    await page.fill("#cfg-lat", "-89.45");
+    await page.fill("#cfg-lon", "-137.42");
+    await page.fill("#cfg-epoch", LIT_EPOCH);
+    await page.selectOption("#cfg-solar-mode", "ephemeris_de");
+    await page.fill("#cfg-kernel-dir", DEFAULT_KERNEL_DIRECTORY);
+    await page.fill("#cfg-crater-age", "2.2");
+    await page.fill("#cfg-rock-k", "0.06");
+    await page.fill("#proc-sub_dem_relief-amplitude", "0.17");
+    const saved = await page.evaluate(() =>
+      (
+        window as unknown as {
+          __lts: { buildConfig(): Record<string, unknown> };
+        }
+      ).__lts.buildConfig(),
+    );
+
+    await page.selectOption("#cfg-preset", "south_pole_navigation");
+    await page.fill("#cfg-terrain-id", "changed_after_save");
+    await page.selectOption("#cfg-solar-mode", "ephemeris");
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.click("#btn-load");
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "roundtrip_fields.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(saved)),
+    });
+    await waitForText(
+      page,
+      "#export-result",
+      "loaded roundtrip_fields",
+      10_000,
+    );
+    const loaded = await page.evaluate(() =>
+      (
+        window as unknown as {
+          __lts: { buildConfig(): Record<string, unknown> };
+        }
+      ).__lts.buildConfig(),
+    );
+    expect(loaded).toEqual(saved);
+
+    // Restore the boot state so later tests retain their independent baseline.
+    const restoreChooserPromise = page.waitForEvent("filechooser");
+    await page.click("#btn-load");
+    const restoreChooser = await restoreChooserPromise;
+    await restoreChooser.setFiles({
+      name: "original.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(original)),
+    });
+    await waitForText(
+      page,
+      "#export-result",
+      "loaded south_pole_site_01",
+      10_000,
+    );
+  });
+
+  it("renders every required panel", async () => {
     for (const panel of [
-      'project',
-      'layers',
-      'dem',
-      'procedural',
-      'craters',
-      'rocks',
-      'editing',
-      'visualization',
-      'solar',
-      'export',
-      'validation',
-      'performance',
+      "project",
+      "layers",
+      "dem",
+      "procedural",
+      "craters",
+      "rocks",
+      "editing",
+      "visualization",
+      "solar",
+      "export",
+      "validation",
+      "performance",
     ]) {
-      expect(await isVisible(page, `[data-panel="${panel}"]`), panel).toBe(true);
+      expect(await isVisible(page, `[data-panel="${panel}"]`), panel).toBe(
+        true,
+      );
     }
   });
 
-  it('lists the nested layers of the active preset', async () => {
-    const rows = page.locator('#layer-rows tr');
+  it("lists the nested layers of the active preset", async () => {
+    const rows = page.locator("#layer-rows tr");
     expect(await rows.count()).toBe(3);
-    const last = (await rows.nth(2).textContent()) ?? '';
-    expect(last).toContain('operational');
-    expect(last).toContain('0.01');
+    const last = (await rows.nth(2).textContent()) ?? "";
+    expect(last).toContain("operational");
+    expect(last).toContain("0.01");
   });
 
-  it('connects to the sidecar', async () => {
-    await page.fill('#sidecar-url', `ws://127.0.0.1:${SIDECAR_PORT}`);
-    await page.click('#btn-connect');
-    await waitForClass(page, '#connection-indicator', 'connected', 20_000);
-    await waitForText(page, '#status-sidecar', 'protocol 1.0.0', 20_000);
+  it("connects to the sidecar", async () => {
+    await page.fill("#sidecar-url", `ws://127.0.0.1:${SIDECAR_PORT}`);
+    await page.click("#btn-connect");
+    await waitForClass(page, "#connection-indicator", "connected", 20_000);
+    await waitForText(page, "#status-sidecar", "protocol 2.0.0", 20_000);
   });
 
-  it('estimates before generating and reports the memory cost', async () => {
-    await page.click('#btn-estimate');
-    await waitForText(page, '#export-result', 'feasible  yes', 30_000);
-    expect(await textOf(page, '#status-memory')).not.toBe('—');
+  it("takes the Site01 DEM path from the sidecar instead of a machine-specific default", async () => {
+    // The page cannot know where a fresh checkout put the downloaded DEM; the
+    // sidecar reports the resolved, existing path in terrain.capabilities and
+    // the UI adopts it on connect. This is what lets the same UI generate on
+    // the development machine, a reviewer's laptop, and a CI runner.
+    expect(await page.inputValue("#cfg-dem-path")).toBe(UI_DEM);
   });
 
-  it('generates real terrain and renders it', async () => {
+  it("estimates before generating and reports the memory cost", async () => {
+    await page.click("#btn-estimate");
+    await waitForText(page, "#export-result", "feasible  yes", 30_000);
+    expect(await textOf(page, "#status-memory")).not.toBe("—");
+  });
+
+  it("generates real terrain and renders it", async () => {
     // Swap to the smaller pad preset so the test stays quick, and point the
     // output somewhere disposable.
-    await page.selectOption('#cfg-preset', 'rover_test_pad');
-    await page.fill('#cfg-terrain-id', 'ui_roundtrip');
-    await page.fill('#cfg-output', join(REPO, '.test-artifacts/ui-generated'));
+    await page.selectOption("#cfg-preset", "rover_test_pad");
+    await page.fill("#cfg-terrain-id", "ui_roundtrip");
+    await page.fill("#cfg-output", join(REPO, ".test-artifacts/ui-generated"));
+    // Explicit as well as auto-filled: the generate path must not depend on
+    // the connect-time discovery having run first.
+    await page.fill("#cfg-dem-path", UI_DEM);
     // Pick an epoch when the Sun is actually up. At 89.46 S it only clears the
     // horizon for part of each month, and the default 2026-08-03 has it at
     // -0.46 deg -- so a black frame there is physically correct, not a bug.
-    await page.fill('#cfg-epoch', LIT_EPOCH);
+    await page.fill("#cfg-epoch", LIT_EPOCH);
 
-    await page.click('#btn-generate');
-    await waitForText(page, '#status-job', 'complete', 300_000);
+    await page.click("#btn-generate");
+    await waitForText(page, "#status-job", "complete", 300_000);
 
     // The inspector must be populated from the real dataset.
-    await waitForText(page, '#insp-terrain', 'ui_roundtrip', 30_000);
-    expect(await textOf(page, '#insp-layers')).toBe('2');
-    const craters = await page.locator('#insp-craters').textContent();
-    expect(Number((craters ?? '0').replace(/,/g, ''))).toBeGreaterThan(0);
+    await waitForText(page, "#insp-terrain", "ui_roundtrip", 30_000);
+    expect(await textOf(page, "#insp-layers")).toBe("2");
+    const craters = await page.locator("#insp-craters").textContent();
+    expect(Number((craters ?? "0").replace(/,/g, ""))).toBeGreaterThan(0);
 
     // And the viewport must actually show geometry.
     await page.waitForTimeout(1500);
     // The Sun must actually be up at the chosen epoch, or the lit check below
     // would be testing nothing.
-    const elevation = Number((await textOf(page, '#solar-elevation')).replace('\u00b0', ''));
+    const elevation = Number(
+      (await textOf(page, "#solar-elevation")).replace("\u00b0", ""),
+    );
     expect(elevation).toBeGreaterThan(0);
 
     const fraction = await litPixelFraction(page);
     expect(fraction).toBeGreaterThan(0.02);
 
-    await page.screenshot({ path: join(SHOTS, '01-lit-terrain.png') });
+    await page.screenshot({ path: join(SHOTS, "01-lit-terrain.png") });
   }, 400_000);
 
-  it('cites its real data source in the provenance panel', async () => {
-    const text = await page.locator('#insp-provenance').textContent();
+  it("renders the generated rock manifest as labelled instances", async () => {
+    const expected = Number(
+      (await textOf(page, "#insp-rocks")).replace(/,/g, ""),
+    );
+    const rendered = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: {
+            viewer: {
+              scene: {
+                getObjectByName(name: string): { count?: number } | undefined;
+              };
+            };
+          };
+        }
+      ).__lts.viewer;
+      return (
+        (viewer.scene.getObjectByName("PhysicalRocks")?.count ?? 0) +
+        (viewer.scene.getObjectByName("VisualRocks")?.count ?? 0)
+      );
+    });
+    expect(expected).toBeGreaterThan(0);
+    expect(rendered).toBe(expected);
+    expect(await textOf(page, "#insp-rock-rendering")).toMatch(
+      /modelled|modeled/i,
+    );
+  });
+
+  it("discards a tile stream if the authoritative world changes mid-load", async () => {
+    const state = await page.evaluate(async () => {
+      type Snapshot = {
+        terrainId: string;
+        seed: string;
+        datasetRevision: number;
+        sequenceNumber: number;
+        baseline: { worldStateSha256: string };
+        layers: Array<{ id: string; resolutionMeters: number }>;
+      };
+      const lts = (
+        window as unknown as {
+          __lts: {
+            client: {
+              call<T>(
+                method: string,
+                params?: Record<string, unknown>,
+              ): Promise<T>;
+            };
+            loadDataset(): Promise<void>;
+            datasetSnapshot?: Snapshot;
+          };
+        }
+      ).__lts;
+      const opened = new Promise<void>((resolveOpened, rejectOpened) => {
+        const timer = window.setTimeout(
+          () =>
+            rejectOpened(
+              new Error("loadDataset exposed no opening-snapshot boundary"),
+            ),
+          2_000,
+        );
+        document.addEventListener(
+          "lts:dataset-snapshot-opened",
+          () => {
+            window.clearTimeout(timer);
+            resolveOpened();
+          },
+          { once: true },
+        );
+      });
+      const loading = lts.loadDataset();
+      await opened;
+      const beforeEdit = await lts.client.call<Snapshot>("terrain.getDataset");
+      const finest = beforeEdit.layers.reduce((left, right) =>
+        right.resolutionMeters < left.resolutionMeters ? right : left,
+      );
+      const applied = await lts.client.call<{
+        delta: { sequenceNumber: number };
+      }>("terrain.applyOperation", {
+        operation: {
+          kind: "raise",
+          layerId: finest.id,
+          centerXMeters: 0,
+          centerZMeters: 0,
+          radiusMeters: 1,
+          strengthMeters: 0.01,
+          falloff: 2,
+          massConserving: false,
+        },
+      });
+      await loading;
+      const live = await lts.client.call<Snapshot>("terrain.getDataset");
+      return {
+        applied: applied.delta.sequenceNumber,
+        installed: lts.datasetSnapshot,
+        live,
+      };
+    });
+    expect(state.installed).toMatchObject({
+      terrainId: state.live.terrainId,
+      seed: state.live.seed,
+      datasetRevision: state.live.datasetRevision,
+      sequenceNumber: state.live.sequenceNumber,
+      baseline: { worldStateSha256: state.live.baseline.worldStateSha256 },
+    });
+    expect(state.live.sequenceNumber).toBeGreaterThan(state.applied);
+  });
+
+  it("cites its real data source in the provenance panel", async () => {
+    const text = await page.locator("#insp-provenance").textContent();
     expect(text).toMatch(/LOLA|PGDA/i);
     expect(text).toMatch(/synthetic:/);
   });
 
-  it('reports solar geometry consistent with a polar site', async () => {
-    await page.click('#btn-solar');
-    await waitForText(page, '#solar-elevation', '°', 20_000);
-    const elevation = Number((await page.locator('#solar-elevation').textContent())!.replace('°', ''));
+  it("reports solar geometry consistent with a polar site", async () => {
+    await page.click("#btn-solar");
+    await waitForText(page, "#solar-elevation", "°", 20_000);
+    const elevation = Number(
+      (await page.locator("#solar-elevation").textContent())!.replace("°", ""),
+    );
     // The Sun cannot climb far above the horizon at 89.5°S.
     expect(Math.abs(elevation)).toBeLessThan(2.2);
-    const subsolar = Number((await page.locator('#solar-subsolar').textContent())!.replace('°', ''));
+    const subsolar = Number(
+      (await page.locator("#solar-subsolar").textContent())!.replace("°", ""),
+    );
     expect(Math.abs(subsolar)).toBeLessThan(1.6);
   });
 
-  it('labels polar night instead of presenting a black lit view', async () => {
+  it.skipIf(!deKernelsAvailable)(
+    "exposes the real DE440 solar path without fallback",
+    async () => {
+      await page.selectOption("#cfg-solar-mode", "ephemeris_de");
+      await page.click("#btn-solar");
+      await waitForText(page, "#solar-model", "JPL DE440", 30_000);
+      const mode = await page.evaluate(() => {
+        const config = (
+          window as unknown as {
+            __lts: { buildConfig(): { solar: { mode: string } } };
+          }
+        ).__lts.buildConfig();
+        return config.solar.mode;
+      });
+      expect(mode).toBe("ephemeris_de");
+      expect(await textOf(page, "#solar-elevation")).toContain("°");
+
+      // Restore the default so later analytic-mode assertions retain their
+      // baseline and this test cannot make downstream checks order-dependent.
+      await page.selectOption("#cfg-solar-mode", "ephemeris");
+      await page.click("#btn-solar");
+      await waitForText(page, "#solar-model", "Analytic", 30_000);
+      expect(await isVisible(page, "#solar-unavailable-banner")).toBe(false);
+    },
+  );
+
+  it("removes direct lighting when the selected solar authority fails", async () => {
+    await page.fill("#cfg-epoch", LIT_EPOCH);
+    await page.selectOption("#cfg-solar-mode", "ephemeris");
+    await page.click("#btn-solar");
+    await waitForText(page, "#solar-model", "Analytic", 30_000);
+    const litIntensity = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: { viewer: { sun: { intensity: number } } };
+        }
+      ).__lts.viewer;
+      return viewer.sun.intensity;
+    });
+    expect(litIntensity).toBeGreaterThan(0);
+
+    // SHOTS is a real, existing directory, but it contains no SPICE kernels.
+    // The resulting structured failure must not leave the preceding plausible
+    // daylight active in the viewport.
+    await page.selectOption("#cfg-solar-mode", "ephemeris_de");
+    await page.fill("#cfg-kernel-dir", SHOTS);
+    await page.click("#btn-solar");
+    await waitForText(page, "#solar-model", "unavailable", 30_000);
+    const staleIntensity = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: { viewer: { sun: { intensity: number } } };
+        }
+      ).__lts.viewer;
+      return viewer.sun.intensity;
+    });
+    expect(staleIntensity).toBe(0);
+    expect(await isVisible(page, "#solar-unavailable-banner")).toBe(true);
+
+    await page.fill("#cfg-kernel-dir", DEFAULT_KERNEL_DIRECTORY);
+    await page.selectOption("#cfg-solar-mode", "ephemeris");
+    await page.click("#btn-solar");
+    await waitForText(page, "#solar-model", "Analytic", 30_000);
+    expect(await isVisible(page, "#solar-unavailable-banner")).toBe(false);
+  });
+
+  it("labels polar night instead of presenting a black lit view", async () => {
     // 2026-08-03 puts the Sun at -0.46 deg here: the lit render is honestly
     // black, and the viewport must say so rather than look broken.
-    await page.fill('#cfg-epoch', '2026-08-03T00:00:00Z');
-    await page.click('#btn-solar');
+    await page.fill("#cfg-epoch", "2026-08-03T00:00:00Z");
+    await page.click("#btn-solar");
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
-      if (await isVisible(page, '#night-banner')) break;
+      if (await isVisible(page, "#night-banner")) break;
       await page.waitForTimeout(200);
     }
-    expect(await isVisible(page, '#night-banner')).toBe(true);
-    expect(await textOf(page, '#solar-shadow')).toContain('sun below horizon');
+    expect(await isVisible(page, "#night-banner")).toBe(true);
+    expect(await textOf(page, "#solar-shadow")).toContain("sun below horizon");
 
     // Back in daylight the banner must clear (later pixel checks depend on
     // this restore, so its correctness is load-bearing for the suite too).
-    await page.fill('#cfg-epoch', LIT_EPOCH);
-    await page.click('#btn-solar');
-    await waitForText(page, '#solar-elevation', '0.8', 20_000);
+    await page.fill("#cfg-epoch", LIT_EPOCH);
+    await page.click("#btn-solar");
+    await waitForText(page, "#solar-elevation", "0.8", 20_000);
     await page.waitForTimeout(300);
-    expect(await isVisible(page, '#night-banner')).toBe(false);
+    expect(await isVisible(page, "#night-banner")).toBe(false);
   });
 
-  it('switches analysis overlays and changes what is drawn', async () => {
+  it("switches analysis overlays and changes what is drawn", async () => {
     const shots: Record<string, number> = {};
-    for (const overlay of ['elevation', 'slope', 'traversability', 'semantic']) {
-      await page.selectOption('#viz-overlay', overlay);
+    for (const overlay of [
+      "elevation",
+      "slope",
+      "traversability",
+      "semantic",
+    ]) {
+      await page.selectOption("#viz-overlay", overlay);
       await page.waitForTimeout(500);
       shots[overlay] = await litPixelFraction(page);
       await page.screenshot({ path: join(SHOTS, `02-overlay-${overlay}.png`) });
@@ -322,156 +664,245 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     for (const [, fraction] of Object.entries(shots)) {
       expect(fraction).toBeGreaterThan(0.02);
     }
-    expect(await textOf(page, '#legend-note')).toContain('crater/rock classes');
+    expect(await textOf(page, "#legend-note")).toContain("crater/rock classes");
   });
 
-  it('labels the traversability overlay as a synthetic heuristic', async () => {
-    await page.selectOption('#viz-overlay', 'traversability');
+  it("labels the traversability overlay as a synthetic heuristic", async () => {
+    await page.selectOption("#viz-overlay", "traversability");
     await page.waitForTimeout(300);
     // Spec §22/§33: heuristics must be marked wherever they are shown.
-    expect(await textOf(page, '#legend-note')).toContain('SYNTHETIC HEURISTIC');
+    expect(await textOf(page, "#legend-note")).toContain("SYNTHETIC HEURISTIC");
   });
 
-  it('switches to the rover-height camera', async () => {
-    await page.selectOption('#viz-overlay', 'lit');
-    await page.selectOption('#viz-camera', 'rover');
+  it("preserves the operator viewpoint when visualization controls change", async () => {
+    await page.selectOption("#viz-camera", "orbit");
+    const expected = [17, 23, 31];
+    await page.evaluate((position) => {
+      const viewer = (
+        window as unknown as {
+          __lts: {
+            viewer: {
+              camera: {
+                position: { set(x: number, y: number, z: number): void };
+              };
+            };
+          };
+        }
+      ).__lts.viewer;
+      viewer.camera.position.set(position[0], position[1], position[2]);
+    }, expected);
+    await page.selectOption("#viz-overlay", "elevation");
+    const actual = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: { viewer: { camera: { position: { toArray(): number[] } } } };
+        }
+      ).__lts.viewer;
+      return viewer.camera.position.toArray();
+    });
+    expect(actual).toEqual(expected);
+  });
+
+  it("switches to the rover-height camera", async () => {
+    await page.selectOption("#viz-overlay", "lit");
+    await page.selectOption("#viz-camera", "rover");
     await page.waitForTimeout(800);
-    await page.screenshot({ path: join(SHOTS, '03-rover-view.png') });
+    await page.screenshot({ path: join(SHOTS, "03-rover-view.png") });
     const fraction = await litPixelFraction(page);
     expect(fraction).toBeGreaterThanOrEqual(0);
   });
 
-  it('renders a top-down view with layer boundaries', async () => {
-    await page.selectOption('#viz-camera', 'topdown');
-    await page.selectOption('#viz-overlay', 'elevation');
-    await page.check('#viz-grid');
+  it("renders a top-down view with layer boundaries", async () => {
+    await page.selectOption("#viz-camera", "topdown");
+    await page.selectOption("#viz-overlay", "elevation");
+    await page.check("#viz-grid");
     await page.waitForTimeout(800);
+    const framing = await page.evaluate(() => {
+      const viewer = (
+        window as unknown as {
+          __lts: {
+            viewer: {
+              siteExtentM: number;
+              camera: { top?: number; bottom?: number };
+            };
+          };
+        }
+      ).__lts.viewer;
+      return {
+        siteExtentM: viewer.siteExtentM,
+        verticalSpan: (viewer.camera.top ?? 0) - (viewer.camera.bottom ?? 0),
+      };
+    });
+    expect(framing.verticalSpan).toBeGreaterThanOrEqual(framing.siteExtentM);
     // Unlit false colour, so coverage reflects geometry rather than the Sun.
     const fraction = await litPixelFraction(page);
     expect(fraction).toBeGreaterThan(0.05);
-    await page.screenshot({ path: join(SHOTS, '04-topdown.png') });
+    await page.screenshot({ path: join(SHOTS, "04-topdown.png") });
   });
 
-  it('applies an edit through the protocol and reports mass balance', async () => {
-    await page.selectOption('#viz-camera', 'orbit');
+  it("applies and undoes an edit with keyboard-operable coordinate controls", async () => {
+    const raise = page.locator('#brush-buttons button[data-brush="raise"]');
+    await raise.focus();
+    await page.keyboard.press("Enter");
+    await waitForClass(
+      page,
+      '#brush-buttons button[data-brush="raise"]',
+      "active",
+      5_000,
+    );
+
+    await page.locator("#brush-x").focus();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type("0");
+    await page.locator("#brush-z").focus();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type("0");
+    await page.locator("#btn-brush-apply-coords").focus();
+    await page.keyboard.press("Enter");
+    await waitForText(page, "#edit-status", "delta-", 120_000);
+
+    await page.locator("#btn-undo").focus();
+    await page.keyboard.press("Enter");
+    await waitForText(page, "#edit-status", "undid raise", 120_000);
+  }, 260_000);
+
+  it("applies an edit through the protocol and reports mass balance", async () => {
+    await page.selectOption("#viz-camera", "orbit");
     await page.waitForTimeout(500);
 
     await page.click('#brush-buttons button[data-brush="lower"]');
-    await waitForClass(page, '#brush-buttons button[data-brush="lower"]', 'active', 5_000);
-    await page.check('#brush-mass-conserving');
-    await page.fill('#brush-radius', '1.5');
-    await page.fill('#brush-strength', '0.25');
+    await waitForClass(
+      page,
+      '#brush-buttons button[data-brush="lower"]',
+      "active",
+      5_000,
+    );
+    await page.check("#brush-mass-conserving");
+    await page.fill("#brush-radius", "1.5");
+    await page.fill("#brush-strength", "0.25");
 
     // Click the middle of the viewport, which looks at the site centre.
-    const box = (await page.locator('#canvas').boundingBox())!;
+    const box = (await page.locator("#canvas").boundingBox())!;
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 
-    await waitForText(page, '#edit-status', 'cut', 120_000);
-    const status = await page.locator('#edit-status').textContent();
+    await waitForText(page, "#edit-status", "cut", 120_000);
+    const status = await page.locator("#edit-status").textContent();
     expect(status).toMatch(/delta-\d+/);
     expect(status).toMatch(/error \d+\.\d+%/);
 
     // Mass-conserving edits must balance to well under a percent.
-    const err = Number(/error (\d+\.\d+)%/.exec(status ?? '')?.[1] ?? '99');
+    const err = Number(/error (\d+\.\d+)%/.exec(status ?? "")?.[1] ?? "99");
     expect(err).toBeLessThan(1);
+    // The mesh is streamed at a decimated 0.05 m preview interval, but the
+    // status contract reports the authoritative layer resolution.
+    expect(await textOf(page, "#status-resolution")).toBe("0.01 m");
 
-    await page.screenshot({ path: join(SHOTS, '05-after-edit.png') });
+    await page.screenshot({ path: join(SHOTS, "05-after-edit.png") });
   }, 200_000);
 
-  it('exports and validates from the UI', async () => {
-    await page.click('#btn-validate');
-    await waitForText(page, '#validation-result', 'PASSED', 180_000);
-    await waitForClass(page, '#validation-result', 'pass', 10_000);
+  it("exports and validates from the UI", async () => {
+    await page.click("#btn-validate");
+    await waitForText(page, "#validation-result", "PASSED", 180_000);
+    await waitForClass(page, "#validation-result", "pass", 10_000);
   }, 200_000);
 
-  it('finishes with no console errors', () => {
+  it("finishes with no console errors", () => {
     // Filter the benign WebGL software-rasteriser notices swiftshader emits.
-    const real = consoleErrors.filter((e) => !/swiftshader|SwiftShader|GroupMarker/.test(e));
+    const real = consoleErrors.filter(
+      (e) => !/swiftshader|SwiftShader|GroupMarker/.test(e),
+    );
     expect(real).toEqual([]);
   });
 
-  it('renders the construction brush chips', async () => {
+  it("renders the construction brush chips", async () => {
     for (const kind of [
-      'ramp',
-      'pad',
-      'spoil_pile',
-      'wheel_track',
-      'polygonal_cut',
-      'polygonal_fill',
+      "ramp",
+      "pad",
+      "spoil_pile",
+      "wheel_track",
+      "polygonal_cut",
+      "polygonal_fill",
     ]) {
       expect(
-        await isVisible(page, `#construction-buttons button[data-brush="${kind}"]`),
+        await isVisible(
+          page,
+          `#construction-buttons button[data-brush="${kind}"]`,
+        ),
         kind,
       ).toBe(true);
     }
   });
 
-  it('applies a spoil pile and reports the repose clamp', async () => {
+  it("applies a spoil pile and reports the repose clamp", async () => {
     await page.click('#construction-buttons button[data-brush="spoil_pile"]');
     await waitForClass(
       page,
       '#construction-buttons button[data-brush="spoil_pile"]',
-      'active',
+      "active",
       5_000,
     );
-    await page.uncheck('#brush-mass-conserving');
+    await page.uncheck("#brush-mass-conserving");
     // A 5 m pile on a 2 m base demands a 68 deg cone — far past the 35 deg
     // regolith angle of repose, so the server must clamp and say so.
-    await page.fill('#brush-radius', '2');
-    await page.fill('#brush-strength', '5');
+    await page.fill("#brush-radius", "2");
+    await page.fill("#brush-strength", "5");
 
-    const box = (await page.locator('#canvas').boundingBox())!;
+    const box = (await page.locator("#canvas").boundingBox())!;
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 
-    await waitForText(page, '#edit-status', 'repose', 120_000);
-    const status = await textOf(page, '#edit-status');
+    await waitForText(page, "#edit-status", "repose", 120_000);
+    const status = await textOf(page, "#edit-status");
     expect(status).toMatch(/delta-\d+/);
     // 2 m * tan(35 deg) = 1.400 m.
-    expect(status).toContain('height clamped to 1.400 m by 35 deg repose');
+    expect(status).toContain("height clamped to 1.400 m by 35 deg repose");
   }, 200_000);
 
-  it('collects polygon vertices and applies a polygonal cut', async () => {
-    await page.click('#construction-buttons button[data-brush="polygonal_cut"]');
+  it("collects polygon vertices and applies a polygonal cut", async () => {
+    await page.click(
+      '#construction-buttons button[data-brush="polygonal_cut"]',
+    );
     await waitForClass(
       page,
       '#construction-buttons button[data-brush="polygonal_cut"]',
-      'active',
+      "active",
       5_000,
     );
-    const box = (await page.locator('#canvas').boundingBox())!;
+    const box = (await page.locator("#canvas").boundingBox())!;
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
     // Clicks in polygon mode add vertices instead of applying a brush.
     await page.mouse.click(cx - 60, cy - 40);
-    await waitForText(page, '#edit-status', 'polygon: 1 vertices', 10_000);
+    await waitForText(page, "#edit-status", "polygon: 1 vertices", 10_000);
     await page.mouse.click(cx + 60, cy - 40);
-    await waitForText(page, '#edit-status', 'polygon: 2 vertices', 10_000);
+    await waitForText(page, "#edit-status", "polygon: 2 vertices", 10_000);
     await page.mouse.click(cx, cy + 50);
-    await waitForText(page, '#edit-status', 'polygon: 3 vertices', 10_000);
+    await waitForText(page, "#edit-status", "polygon: 3 vertices", 10_000);
 
-    await page.click('#btn-polygon-apply');
-    await waitForText(page, '#edit-status', 'delta-', 120_000);
-    const status = await textOf(page, '#edit-status');
+    await page.click("#btn-polygon-apply");
+    await waitForText(page, "#edit-status", "delta-", 120_000);
+    const status = await textOf(page, "#edit-status");
     expect(status).toMatch(/delta-\d+/);
     expect(status).toMatch(/cut \d+\.\d+ m³/);
   }, 200_000);
 
-  it('refuses to undo a construction operation with the honest message', async () => {
+  it("refuses to undo a construction operation with the honest message", async () => {
     // The last applied operation is the polygonal_cut above; its pre-edit
     // surface is destroyed, so undo must refuse rather than guess.
-    await page.click('#btn-undo');
-    await waitForText(page, '#edit-status', 'not invertible', 10_000);
-    expect(await textOf(page, '#edit-status')).toContain("cannot undo 'polygonal_cut'");
+    await page.click("#btn-undo");
+    await waitForText(page, "#edit-status", "not invertible", 10_000);
+    expect(await textOf(page, "#edit-status")).toContain(
+      "cannot undo 'polygonal_cut'",
+    );
   });
 
-  it('captures the construction screenshot', async () => {
-    await page.screenshot({ path: join(SHOTS, '06-construction.png') });
-    expect(existsSync(join(SHOTS, '06-construction.png'))).toBe(true);
+  it("captures the construction screenshot", async () => {
+    await page.screenshot({ path: join(SHOTS, "06-construction.png") });
+    expect(existsSync(join(SHOTS, "06-construction.png"))).toBe(true);
   });
 
-  it('renders the slope, noise, and paint brush chips', async () => {
+  it("renders the slope, noise, and paint brush chips", async () => {
     // Iteration-5 kinds join the basic brush row (protocol.md kind table).
-    for (const kind of ['slope', 'noise', 'semantic_paint']) {
+    for (const kind of ["slope", "noise", "semantic_paint"]) {
       expect(
         await isVisible(page, `#brush-buttons button[data-brush="${kind}"]`),
         kind,
@@ -480,90 +911,106 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     // Activating paint reveals its class picker, populated with the full
     // 12-name SEMANTIC_CLASSES set from packages/shared-types/src/terrain.ts.
     await page.click('#brush-buttons button[data-brush="semantic_paint"]');
-    await waitForClass(page, '#brush-buttons button[data-brush="semantic_paint"]', 'active', 5_000);
-    expect(await isVisible(page, '#param-semantic-class')).toBe(true);
-    expect(await page.locator('#brush-semantic-class option').count()).toBe(12);
+    await waitForClass(
+      page,
+      '#brush-buttons button[data-brush="semantic_paint"]',
+      "active",
+      5_000,
+    );
+    expect(await isVisible(page, "#param-semantic-class")).toBe(true);
+    expect(await page.locator("#brush-semantic-class option").count()).toBe(12);
   });
 
-  it('paints a semantic class and the inspector reads it back', async () => {
+  it("paints a semantic class and the inspector reads it back", async () => {
     // The paint chip is active from the previous test; re-activate if not
     // (chips toggle, so a blind click could deactivate it).
-    const chip = page.locator('#brush-buttons button[data-brush="semantic_paint"]');
-    if (!((await chip.getAttribute('class')) ?? '').includes('active')) {
+    const chip = page.locator(
+      '#brush-buttons button[data-brush="semantic_paint"]',
+    );
+    if (!((await chip.getAttribute("class")) ?? "").includes("active")) {
       await chip.click();
     }
-    await waitForClass(page, '#brush-buttons button[data-brush="semantic_paint"]', 'active', 5_000);
-    await page.selectOption('#brush-semantic-class', 'compacted_surface');
-    await page.fill('#brush-radius', '2');
+    await waitForClass(
+      page,
+      '#brush-buttons button[data-brush="semantic_paint"]',
+      "active",
+      5_000,
+    );
+    await page.selectOption("#brush-semantic-class", "compacted_surface");
+    await page.fill("#brush-radius", "2");
 
-    const box = (await page.locator('#canvas').boundingBox())!;
+    const box = (await page.locator("#canvas").boundingBox())!;
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
     await page.mouse.click(cx, cy);
 
     // semantic_paint moves no height, so the delta reports zero volumes —
     // but it must still produce a delta id (its mask checksums changed).
-    await waitForText(page, '#edit-status', 'delta-', 120_000);
-    expect(await textOf(page, '#edit-status')).toMatch(/delta-\d+/);
+    await waitForText(page, "#edit-status", "delta-", 120_000);
+    expect(await textOf(page, "#edit-status")).toMatch(/delta-\d+/);
 
     // Hover the painted spot: the inspector's semantic readout comes from the
     // authoritative terrain.getSemanticClass, not the preview mesh. Point
     // queries are throttled (one in flight), so nudge the pointer until the
     // readout lands.
     const deadline = Date.now() + 30_000;
-    let semantic = '';
+    let semantic = "";
     while (Date.now() < deadline) {
       await page.mouse.move(cx + 40, cy + 40);
       await page.mouse.move(cx, cy);
       await page.waitForTimeout(300);
-      semantic = await textOf(page, '#insp-semantic');
-      if (semantic === 'compacted_surface') break;
+      semantic = await textOf(page, "#insp-semantic");
+      if (semantic === "compacted_surface") break;
     }
-    expect(semantic).toBe('compacted_surface');
+    expect(semantic).toBe("compacted_surface");
   }, 200_000);
 
-  it('lists the operation history including the semantic paint', async () => {
-    await page.click('#btn-history-refresh');
+  it("lists the operation history including the semantic paint", async () => {
+    await page.click("#btn-history-refresh");
     // Every edit this suite applied is in the server's log; the paint above
     // guarantees at least one row and pins its kind.
-    await waitForText(page, '#history-rows', 'semantic_paint', 30_000);
-    const rows = page.locator('#history-rows .history-row');
+    await waitForText(page, "#history-rows", "semantic_paint", 30_000);
+    const rows = page.locator("#history-rows .history-row");
     expect(await rows.count()).toBeGreaterThanOrEqual(1);
     // Each row is index, kind, radius, time-of-day.
-    expect(await textOf(page, '#history-rows')).toMatch(/#\d+ semantic_paint r=2\.0 m \d{2}:\d{2}:\d{2}/);
+    expect(await textOf(page, "#history-rows")).toMatch(
+      /#\d+ semantic_paint r=2\.0 m \d{2}:\d{2}:\d{2}/,
+    );
   });
 
-  it('refuses to undo the semantic paint with the honest message', async () => {
+  it("refuses to undo the semantic paint with the honest message", async () => {
     // The overwritten mask classes are not stored in the operation record,
     // so undo must refuse rather than guess.
-    await page.click('#btn-undo');
-    await waitForText(page, '#edit-status', 'not invertible', 10_000);
-    expect(await textOf(page, '#edit-status')).toContain("cannot undo 'semantic_paint'");
+    await page.click("#btn-undo");
+    await waitForText(page, "#edit-status", "not invertible", 10_000);
+    expect(await textOf(page, "#edit-status")).toContain(
+      "cannot undo 'semantic_paint'",
+    );
   });
 
-  it('captures the history screenshot', async () => {
-    await page.screenshot({ path: join(SHOTS, '07-history.png') });
-    expect(existsSync(join(SHOTS, '07-history.png'))).toBe(true);
+  it("captures the history screenshot", async () => {
+    await page.screenshot({ path: join(SHOTS, "07-history.png") });
+    expect(existsSync(join(SHOTS, "07-history.png"))).toBe(true);
   });
 
-  it('writes screenshots for visual inspection', () => {
+  it("writes screenshots for visual inspection", () => {
     for (const name of [
-      '01-lit-terrain.png',
-      '02-overlay-elevation.png',
-      '02-overlay-slope.png',
-      '02-overlay-semantic.png',
-      '03-rover-view.png',
-      '04-topdown.png',
-      '05-after-edit.png',
-      '06-construction.png',
-      '07-history.png',
+      "01-lit-terrain.png",
+      "02-overlay-elevation.png",
+      "02-overlay-slope.png",
+      "02-overlay-semantic.png",
+      "03-rover-view.png",
+      "04-topdown.png",
+      "05-after-edit.png",
+      "06-construction.png",
+      "07-history.png",
     ]) {
       expect(existsSync(join(SHOTS, name))).toBe(true);
     }
     writeFileSync(
-      join(SHOTS, 'README.txt'),
-      'Screenshots from tests/interactive-ui.test.ts, rendered in headless Chromium\n' +
-        'with SwiftShader over terrain generated from the real LOLA Site01 DEM.\n',
+      join(SHOTS, "README.txt"),
+      "Screenshots from tests/interactive-ui.test.ts, rendered in headless Chromium\n" +
+        "with SwiftShader over terrain generated from the real LOLA Site01 DEM.\n",
     );
   });
 
@@ -579,42 +1026,48 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
 
   const previewActive = () =>
     page.evaluate(
-      () => (window as unknown as { __lts: { previewActive: boolean } }).__lts.previewActive,
+      () =>
+        (window as unknown as { __lts: { previewActive: boolean } }).__lts
+          .previewActive,
     );
 
-  it('GPU preview toggle reports availability honestly', async () => {
+  it("GPU preview toggle reports availability honestly", async () => {
     // Branch on the OUTCOME the UI reports, not on navigator.gpu presence:
     // headless Chrome under SwiftShader exposes the API and then fails (or
     // formerly hung) at adapter init — a third case the presence check cannot
     // see. Whatever happens, the status line must reach a terminal state:
     // "GPU preview ready" or "WebGPU not available…(reason)". An eternal
     // "initialising" is the failure this test exists to catch.
-    await page.check('#viz-gpu-preview');
+    await page.check("#viz-gpu-preview");
     const deadline = Date.now() + 45_000;
-    let status = '';
+    let status = "";
     while (Date.now() < deadline) {
-      status = await textOf(page, '#gpu-preview-status');
-      if (status.includes('GPU preview ready') || status.includes('WebGPU not available')) break;
+      status = await textOf(page, "#gpu-preview-status");
+      if (
+        status.includes("GPU preview ready") ||
+        status.includes("WebGPU not available")
+      )
+        break;
       await page.waitForTimeout(300);
     }
-    webgpuUsable = status.includes('GPU preview ready');
+    webgpuUsable = status.includes("GPU preview ready");
     if (!webgpuUsable) {
-      expect(status).toContain('WebGPU not available');
-      expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+      expect(status).toContain("WebGPU not available");
+      expect(await isVisible(page, "#gpu-preview-banner")).toBe(false);
       expect(await previewActive()).toBe(false);
     }
   }, 60_000);
 
-  it('GPU preview swaps a labelled preview mesh on a parameter edit', async () => {
+  it("GPU preview swaps a labelled preview mesh on a parameter edit", async () => {
     if (!webgpuUsable) {
       // Unsupported: toggling on must have changed no behaviour.
-      expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+      expect(await isVisible(page, "#gpu-preview-banner")).toBe(false);
       expect(await previewActive()).toBe(false);
       return;
     }
     expect(await previewActive()).toBe(false);
     // page.fill dispatches the input event the preview listens for.
-    await page.fill('#proc-sub_dem_relief-amplitude', '0.5');
+    await page.fill("#proc-sub_dem_relief-amplitude", "0.5");
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       if (await previewActive()) break;
@@ -622,64 +1075,97 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     }
     expect(await previewActive()).toBe(true);
     // The persistent amber banner labels the preview as non-authoritative.
-    expect(await isVisible(page, '#gpu-preview-banner')).toBe(true);
-    expect(await textOf(page, '#gpu-preview-banner')).toContain(
-      'not the authoritative terrain',
+    expect(await isVisible(page, "#gpu-preview-banner")).toBe(true);
+    expect(await textOf(page, "#gpu-preview-banner")).toContain(
+      "not the authoritative terrain",
     );
     // The swapped mesh's heights differ from the sidecar's data...
     const maxDelta = await page.evaluate(
       () =>
-        (window as unknown as { __lts: { previewMaxAbsDelta: number | null } }).__lts
-          .previewMaxAbsDelta,
+        (window as unknown as { __lts: { previewMaxAbsDelta: number | null } })
+          .__lts.previewMaxAbsDelta,
     );
     expect(maxDelta).toBeGreaterThan(0);
     expect(
       await page.evaluate(
         () =>
-          (window as unknown as { __lts: { viewer: { previewShowing: boolean } } }).__lts.viewer
-            .previewShowing,
+          (
+            window as unknown as {
+              __lts: { viewer: { previewShowing: boolean } };
+            }
+          ).__lts.viewer.previewShowing,
       ),
     ).toBe(true);
     // ...while the authoritative status-bar seed/readouts still come from the
     // sidecar dataset (the preview never enters currentLayers).
-    expect(await textOf(page, '#status-seed')).toBe('lunar-south-pole-site-01');
-    await page.screenshot({ path: join(SHOTS, '08-gpu-preview.png') });
+    expect(await textOf(page, "#status-seed")).toBe("lunar-south-pole-site-01");
+    await page.screenshot({ path: join(SHOTS, "08-gpu-preview.png") });
   }, 120_000);
 
-  it('Generate clears the GPU preview and shows real data', async () => {
+  it("Generate clears the GPU preview and shows real data", async () => {
     if (!webgpuUsable) {
       expect(await previewActive()).toBe(false);
       return;
     }
-    await page.click('#btn-generate');
+    await page.click("#btn-generate");
     // generate() clears the preview synchronously before the job starts.
     await page.waitForFunction(
-      () => !document.getElementById('progress-overlay')!.hidden,
+      () => !document.getElementById("progress-overlay")!.hidden,
       undefined,
       { timeout: 15_000 },
     );
-    expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+    expect(await isVisible(page, "#gpu-preview-banner")).toBe(false);
     await page.waitForFunction(
-      () => document.getElementById('progress-overlay')!.hidden,
+      () => document.getElementById("progress-overlay")!.hidden,
       undefined,
       { timeout: 380_000 },
     );
-    await waitForText(page, '#status-job', 'complete', 15_000);
+    await waitForText(page, "#status-job", "complete", 15_000);
     // Real sidecar data is on screen; no preview, no banner, no flag.
-    expect(await isVisible(page, '#gpu-preview-banner')).toBe(false);
+    expect(await isVisible(page, "#gpu-preview-banner")).toBe(false);
     expect(await previewActive()).toBe(false);
     expect(
       await page.evaluate(
         () =>
-          (window as unknown as { __lts: { viewer: { previewShowing: boolean } } }).__lts.viewer
-            .previewShowing,
+          (
+            window as unknown as {
+              __lts: { viewer: { previewShowing: boolean } };
+            }
+          ).__lts.viewer.previewShowing,
       ),
     ).toBe(false);
   }, 400_000);
 
-  it('records the 08-gpu-preview screenshot only on the supported path', () => {
+  it("forgets the previous world's undo history after Generate", async () => {
+    // Put an invertible edit on top of the history, then regenerate. Undo must
+    // not re-apply that edit's inverse to the new terrain (which never received
+    // the edit), nor keep the old history: it reports an empty history.
+    const raiseChip = page.locator('#brush-buttons button[data-brush="raise"]');
+    if (!((await raiseChip.getAttribute("class")) ?? "").includes("active")) {
+      await raiseChip.click();
+    }
+    await waitForClass(page, '#brush-buttons button[data-brush="raise"]', "active", 5_000);
+    await page.fill("#brush-radius", "2");
+    const box = (await page.locator("#canvas").boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await waitForText(page, "#edit-status", "delta-", 120_000);
+
+    // window.__lts.generate resolves only after the new dataset is installed,
+    // so there is no race between the regenerate and the undo click.
+    await page.evaluate(
+      () =>
+        (window as unknown as { __lts: { generate(): Promise<void> } }).__lts.generate(),
+    );
+    await waitForText(page, "#status-job", "complete", 15_000);
+
+    await page.click("#btn-undo");
+    await waitForText(page, "#edit-status", "nothing to undo", 10_000);
+    expect(await textOf(page, "#edit-status")).not.toContain("undid");
+  }, 400_000);
+
+  it("records the 08-gpu-preview screenshot only on the supported path", () => {
     if (webgpuUsable) {
-      expect(existsSync(join(SHOTS, '08-gpu-preview.png'))).toBe(true);
+      expect(existsSync(join(SHOTS, "08-gpu-preview.png"))).toBe(true);
     } else {
       // Unsupported path: the screenshot is legitimately absent — nothing to
       // assert beyond the recorded flag itself.
@@ -687,7 +1173,7 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     }
   });
 
-  it('auto-loads the sidecar dataset on connect after a page reload', async () => {
+  it("auto-loads the sidecar dataset on connect after a page reload", async () => {
     // The sidecar session outlives the page. A fresh page connecting to a
     // sidecar that already holds terrain must render it without a Generate
     // click — the first-run experience this suite previously never exercised.
@@ -695,16 +1181,16 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
     // full-suite run every core is saturated and even domcontentloaded can
     // straggle past Playwright's 30 s default. The app's own data-ready
     // attribute below is the gate that actually matters.
-    await page.reload({ waitUntil: 'commit', timeout: 120_000 });
+    await page.reload({ waitUntil: "commit", timeout: 120_000 });
     await page.waitForSelector('body[data-ready="true"]', { timeout: 120_000 });
-    await page.fill('#sidecar-url', `ws://127.0.0.1:${SIDECAR_PORT}`);
-    await page.click('#btn-connect');
-    await waitForText(page, '#insp-terrain', 'ui_roundtrip', 30_000);
-    expect(await textOf(page, '#status-job')).toBe('loaded from sidecar');
-    expect(Number((await textOf(page, '#insp-layers')))).toBeGreaterThan(0);
+    await page.fill("#sidecar-url", `ws://127.0.0.1:${SIDECAR_PORT}`);
+    await page.click("#btn-connect");
+    await waitForText(page, "#insp-terrain", "ui_roundtrip", 30_000);
+    expect(await textOf(page, "#status-job")).toBe("loaded from sidecar");
+    expect(Number(await textOf(page, "#insp-layers"))).toBeGreaterThan(0);
     // The reloaded page's epoch field is back at its dark default, so the
     // auto-load must ALSO have re-derived the night state honestly.
-    expect(await isVisible(page, '#night-banner')).toBe(true);
+    expect(await isVisible(page, "#night-banner")).toBe(true);
   }, 120_000);
 });
 
@@ -718,25 +1204,37 @@ describe.skipIf(!demAvailable)('interactive UI', () => {
  * If the Fisher–Yates in terrain-core ever changes, this fails loudly instead
  * of letting the preview silently sample a different noise field.
  */
-describe('GPU preview permutation replication', () => {
-  it('buildPermTable reproduces PerlinNoise2D noise exactly (f64 CPU mirror)', () => {
+describe("GPU preview permutation replication", () => {
+  it("buildPermTable reproduces PerlinNoise2D noise exactly (f64 CPU mirror)", () => {
     const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
     const lerp = (a: number, b: number, t: number) => a + t * (b - a);
     const grad = (h: number, x: number, y: number): number => {
       switch (h & 7) {
-        case 0: return x + y;
-        case 1: return -x + y;
-        case 2: return x - y;
-        case 3: return -x - y;
-        case 4: return x;
-        case 5: return -x;
-        case 6: return y;
-        default: return -y;
+        case 0:
+          return x + y;
+        case 1:
+          return -x + y;
+        case 2:
+          return x - y;
+        case 3:
+          return -x - y;
+        case 4:
+          return x;
+        case 5:
+          return -x;
+        case 6:
+          return y;
+        default:
+          return -y;
       }
     };
     // The same seed channels the pipeline derives (generate.ts).
-    for (const channel of ['procedural:sub_dem_relief', 'procedural-warp:sub_dem_relief', 'procedural:fine_roughness']) {
-      const seed = deriveSeed('lunar-south-pole-site-01', channel);
+    for (const channel of [
+      "procedural:sub_dem_relief",
+      "procedural-warp:sub_dem_relief",
+      "procedural:fine_roughness",
+    ]) {
+      const seed = deriveSeed("lunar-south-pole-site-01", channel);
       const perm = buildPermTable(seed);
       const reference = new PerlinNoise2D(seed);
       const noise = (x: number, y: number): number => {

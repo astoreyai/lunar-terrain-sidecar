@@ -10,12 +10,23 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import {
   buildLocalFrame,
+  fileSha256,
   forward,
   inverse,
   localToProjected,
+  openDemRaster,
   openGeoTiffRaster,
   openPdsRaster,
   pixelToSelenographic,
@@ -25,17 +36,36 @@ import {
   selenographicToPixel,
   LUNAR_RADIUS_M,
 } from '@lts/lunar-dem';
+import { parseConfig } from '@lts/shared-types';
+import { generateTerrain } from '@lts/terrain-pipeline';
+import { exportTerrain } from '@lts/terrain-export';
+import { datasetLocalToSelenographic } from '../apps/headless-server/src/server.js';
 
 import { SITE01_DEM as SITE01, LDEM_75S_LBL } from './paths.js';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 const PGDA_DIR = dirname(SITE01);
 const SHOEMAKER = `${PGDA_DIR}/Shoemaker_final_adj_5mpp_surf.tif`;
 const LDEM_75S = LDEM_75S_LBL;
+const LDEM_75S_IMAGE = LDEM_75S.replace(/\.lbl$/i, '.img');
 
 /** Degrees-minutes-seconds string from GDAL → decimal degrees. */
 function dms(d: number, m: number, s: number, negative: boolean): number {
   const v = d + m / 60 + s / 3600;
   return negative ? -v : v;
+}
+
+function openDescriptorsFor(path: string): string[] {
+  if (!existsSync('/proc/self/fd')) return [];
+  const descriptors: string[] = [];
+  for (const entry of readdirSync('/proc/self/fd')) {
+    try {
+      if (readlinkSync(`/proc/self/fd/${entry}`) === path) descriptors.push(entry);
+    } catch {
+      // The process can close a descriptor between directory read and readlink.
+    }
+  }
+  return descriptors;
 }
 
 describe('polar stereographic projection', () => {
@@ -86,6 +116,29 @@ describe('polar stereographic projection', () => {
 });
 
 describe.skipIf(!existsSync(SITE01))('PGDA 5 m/px site DEM (real GeoTIFF)', () => {
+  it('binds provenance identity to the same opened bytes when the source path moves', async () => {
+    const work = mkdtempSync(join(process.cwd(), '.dem-geotiff-identity-'));
+    const openedPath = join(work, 'Site01_final_adj_5mpp_surf.tif');
+    const movedPath = join(work, 'Site01_final_adj_5mpp_surf.opened.tif');
+    linkSync(SITE01, openedPath);
+
+    const raster = await openDemRaster(openedPath);
+    try {
+      renameSync(openedPath, movedPath);
+      expect(Number.isFinite(raster.readWindow(1599, 1599, 1, 1).data[0])).toBe(true);
+      expect(raster.provenance.sourceFiles).toEqual([
+        {
+          role: 'raster',
+          path: openedPath,
+          sha256: '3ba7b97cb00a2bcf21189c3aeb535f65afc21207154ab9f0d43c5bdc1f7e747e',
+        },
+      ]);
+    } finally {
+      (raster as typeof raster & { close?: () => void }).close?.();
+      rmSync(work, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('reads the georeferencing GDAL reports', async () => {
     const r = await openGeoTiffRaster(SITE01);
     expect(r.widthPixels).toBe(3200);
@@ -151,6 +204,79 @@ describe.skipIf(!existsSync(SITE01))('PGDA 5 m/px site DEM (real GeoTIFF)', () =
     expect(min).toBeCloseTo(-523.1834, 2);
     expect(max).toBeCloseTo(1959.4962, 2);
   });
+
+  it('carries the real projection and source-byte identity into generated provenance', async () => {
+    const raster = await openGeoTiffRaster(SITE01);
+    const centre = pixelToSelenographic(raster, 1599.5, 1599.5);
+    const config = parseConfig({
+      terrainId: 'site01_projection_provenance',
+      seed: 'site01-projection-provenance',
+      outputDirectory: '/tmp/lts-site01-projection-provenance',
+      site: centre,
+      layers: [{ role: 'context', widthMeters: 20, lengthMeters: 20, resolutionMeters: 5 }],
+      dem: { enabled: true, path: SITE01, applyToRoles: ['context'] },
+      proceduralStack: [],
+      craters: { enabled: false },
+      rocks: { enabled: false },
+      regolith: { enabled: false },
+      solar: {
+        mode: 'ephemeris',
+        epochUtc: '2026-08-03T00:00:00Z',
+        computeHorizon: false,
+      },
+    });
+
+    const { dataset } = await generateTerrain(config, { workerThreads: 1 });
+    expect(dataset.coordinateSystem.source_projection).toMatchObject({
+      type: 'polar_stereographic',
+      latitudeOfOriginDeg: -90,
+      centralMeridianDeg: 0,
+      scaleFactor: 1,
+      falseEastingM: 0,
+      falseNorthingM: 0,
+      bodyRadiusM: 1_737_400,
+    });
+    expect(dataset.coordinateSystem.source_projection?.originEastingM).toBeCloseTo(-11_000, 8);
+    expect(dataset.coordinateSystem.source_projection?.originNorthingM).toBeCloseTo(-12_000, 8);
+
+    const localX = dataset.layers[0].bounds.maxX;
+    const localZ = dataset.layers[0].bounds.minZ;
+    const expectedProjected = localToProjected(
+      buildLocalFrame(centre.latitudeDeg, centre.longitudeDeg, raster.projection),
+      localX,
+      localZ,
+    );
+    const expectedSelenographic = inverse(
+      expectedProjected.x,
+      expectedProjected.y,
+      raster.projection,
+    );
+    expect(datasetLocalToSelenographic(dataset, localX, localZ)).toEqual(
+      expectedSelenographic,
+    );
+
+    const source = dataset.provenance.dataSources[0];
+    expect(source.path).toBe(SITE01);
+    expect(source.sha256).toBe('3ba7b97cb00a2bcf21189c3aeb535f65afc21207154ab9f0d43c5bdc1f7e747e');
+    expect(source.sha256).toBe(fileSha256(SITE01));
+    expect(source.files).toBeUndefined();
+
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'lts-site01-projection-'));
+    try {
+      const exported = exportTerrain(dataset, {
+        outputDirectory,
+        tileSizeSamples: config.tileSizeSamples,
+        formats: { exr: false, png16: false, npy: false, glb: false },
+      });
+      const manifest = JSON.parse(readFileSync(exported.manifestPath, 'utf8'));
+      expect(manifest.coordinate_system.source_projection).toEqual(
+        dataset.coordinateSystem.source_projection,
+      );
+      expect(manifest.provenance.dataSources).toEqual(dataset.provenance.dataSources);
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe.skipIf(!existsSync(SITE01))('resampling into a local tangent frame', () => {
@@ -277,6 +403,36 @@ describe.skipIf(!existsSync(SHOEMAKER))('a second real product, for reader gener
 });
 
 describe.skipIf(!existsSync(LDEM_75S))('LOLA PDS3 gridded product (real IMG)', () => {
+  it('reads and hashes detached contributors through stable opened handles', async () => {
+    const work = mkdtempSync(join(process.cwd(), '.dem-pds-identity-'));
+    const labelPath = join(work, 'ldem_75s_120m.lbl');
+    const imagePath = join(work, 'ldem_75s_120m.img');
+    linkSync(LDEM_75S, labelPath);
+    linkSync(LDEM_75S_IMAGE, imagePath);
+
+    const raster = await openDemRaster(labelPath);
+    try {
+      renameSync(labelPath, `${labelPath}.opened`);
+      renameSync(imagePath, `${imagePath}.opened`);
+      expect(Number.isFinite(raster.readWindow(3811, 3811, 1, 1).data[0])).toBe(true);
+      expect(raster.provenance.sourceFiles).toEqual([
+        {
+          role: 'label',
+          path: labelPath,
+          sha256: '5c59b16ec8a610792b1776fa082e409c8cc9f6743757710d14876ef366acd99a',
+        },
+        {
+          role: 'raster',
+          path: imagePath,
+          sha256: 'ae3afc3c75c33d43666ca06c83ca08f0b12ef03b7d36d2d791d972730794391b',
+        },
+      ]);
+    } finally {
+      (raster as typeof raster & { close?: () => void }).close?.();
+      rmSync(work, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('parses the detached label and reads the ME frame declaration', () => {
     const r = openPdsRaster(LDEM_75S);
     expect(r.widthPixels).toBe(7624);
@@ -321,4 +477,57 @@ describe.skipIf(!existsSync(LDEM_75S))('LOLA PDS3 gridded product (real IMG)', (
     // The polar region is not flat; a 48 km window must show real relief.
     expect(max - min).toBeGreaterThan(100);
   });
+
+  it('keeps the detached label and image as separately hashed provenance contributors', async () => {
+    const raster = openPdsRaster(LDEM_75S);
+    const pole = pixelToSelenographic(raster, 3811.5, 3811.5);
+    const config = parseConfig({
+      terrainId: 'ldem_projection_provenance',
+      seed: 'ldem-projection-provenance',
+      outputDirectory: '/tmp/lts-ldem-projection-provenance',
+      site: pole,
+      layers: [{ role: 'context', widthMeters: 240, lengthMeters: 240, resolutionMeters: 120 }],
+      dem: { enabled: true, path: LDEM_75S, applyToRoles: ['context'] },
+      proceduralStack: [],
+      craters: { enabled: false },
+      rocks: { enabled: false },
+      regolith: { enabled: false },
+      solar: {
+        mode: 'ephemeris',
+        epochUtc: '2026-08-03T00:00:00Z',
+        computeHorizon: false,
+      },
+    });
+
+    const { dataset } = await generateTerrain(config, { workerThreads: 1 });
+    if (existsSync('/proc/self/fd')) {
+      expect(openDescriptorsFor(raster.provenance.path)).toHaveLength(0);
+    }
+    expect(dataset.coordinateSystem.source_projection).toEqual({
+      type: 'polar_stereographic',
+      latitudeOfOriginDeg: -90,
+      centralMeridianDeg: 0,
+      scaleFactor: 1,
+      falseEastingM: 0,
+      falseNorthingM: 0,
+      bodyRadiusM: 1_737_400,
+      originEastingM: 0,
+      originNorthingM: 0,
+    });
+
+    const source = dataset.provenance.dataSources[0];
+    expect(source.sha256).toBeUndefined();
+    expect(source.files).toEqual([
+      {
+        role: 'label',
+        path: LDEM_75S,
+        sha256: '5c59b16ec8a610792b1776fa082e409c8cc9f6743757710d14876ef366acd99a',
+      },
+      {
+        role: 'raster',
+        path: raster.provenance.path,
+        sha256: 'ae3afc3c75c33d43666ca06c83ca08f0b12ef03b7d36d2d791d972730794391b',
+      },
+    ]);
+  }, 120_000);
 });

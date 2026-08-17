@@ -16,7 +16,7 @@
     <div id="app">
       <!-- Toolbar (spec §23) -->
       <header id="toolbar">
-        <span class="brand">lunar-terrain-sidecar</span>
+        <h1 class="brand">lunar-terrain-sidecar</h1>
         <button id="btn-new" type="button">New</button>
         <button id="btn-load" type="button">Load</button>
         <button id="btn-save" type="button">Save</button>
@@ -25,9 +25,9 @@
         <button id="btn-export" type="button">Export</button>
         <button id="btn-validate" type="button">Validate</button>
         <span class="spacer"></span>
-        <input id="sidecar-url" type="text" value="ws://127.0.0.1:8768" spellcheck="false" />
+        <input id="sidecar-url" type="text" value="ws://127.0.0.1:8768" spellcheck="false" aria-label="Sidecar WebSocket URL" />
         <button id="btn-connect" type="button">Connect</button>
-        <span id="connection-indicator" class="indicator disconnected" title="sidecar connection">
+        <span id="connection-indicator" class="indicator disconnected" title="sidecar connection" role="status" aria-live="polite">
           <span class="dot"></span><span id="connection-label">disconnected</span>
         </span>
       </header>
@@ -130,6 +130,15 @@
             <label>Radius m<input id="brush-radius" type="number" step="0.1" value="2" /></label>
             <label>Strength m<input id="brush-strength" type="number" step="0.05" value="0.3" /></label>
             <label>Falloff<input id="brush-falloff" type="number" step="0.1" value="2" /></label>
+            <fieldset class="coordinate-entry">
+              <legend>Keyboard / exact target</legend>
+              <div class="row">
+                <label>X m<input id="brush-x" type="number" step="0.01" value="0" /></label>
+                <label>Z m<input id="brush-z" type="number" step="0.01" value="0" /></label>
+              </div>
+              <button id="btn-brush-apply-coords" type="button" disabled>Apply active tool</button>
+              <p class="note">Same authoritative operation as a viewport click. Polygon tools add one vertex.</p>
+            </fieldset>
             <label class="check"><input id="brush-mass-conserving" type="checkbox" /> Mass conserving (cut = fill)</label>
             <label id="param-heading" hidden>Heading °<input id="brush-heading" type="number" step="1" value="0" /></label>
             <label id="param-length" hidden>Length m<input id="brush-length" type="number" step="0.5" value="10" /></label>
@@ -163,7 +172,7 @@
               <button id="btn-undo" type="button">Undo</button>
               <button id="btn-redo" type="button">Redo</button>
             </div>
-            <p class="note" id="edit-status">Edits are stored as replayable operations, never as mutated meshes.</p>
+            <p class="note" id="edit-status" role="status" aria-live="polite">Edits are stored as replayable operations, never as mutated meshes.</p>
           </section>
 
           <section class="panel" data-panel="history">
@@ -206,20 +215,30 @@
             <label class="check"><input id="viz-contours" type="checkbox" /> Contour lines</label>
             <label class="check"><input id="viz-earthshine" type="checkbox" /> Earthshine (non-physical fill)</label>
             <label class="check"><input id="viz-gpu-preview" type="checkbox" /> GPU preview (non-authoritative)</label>
-            <p class="note" id="gpu-preview-status">off — the CPU sidecar remains the sole authority</p>
+            <p class="note" id="gpu-preview-status" role="status" aria-live="polite">off — the CPU sidecar remains the sole authority</p>
           </section>
 
           <section class="panel" data-panel="solar">
             <h2>Solar geometry</h2>
             <label>Epoch UTC<input id="cfg-epoch" type="text" value="2026-08-03T00:00:00Z" spellcheck="false" /></label>
-            <button id="btn-solar" type="button">Recompute from ephemeris</button>
+            <label>Ephemeris model
+              <select id="cfg-solar-mode">
+                <option value="ephemeris">Analytic Meeus / IAU</option>
+                <option value="ephemeris_de">JPL DE440 kernels</option>
+              </select>
+            </label>
+            <label id="cfg-kernel-row" hidden>Kernel directory
+              <input id="cfg-kernel-dir" type="text" value="" placeholder="server default / LTS_SPICE_DIR" spellcheck="false" />
+            </label>
+            <button id="btn-solar" type="button">Recompute solar geometry</button>
             <dl class="readout">
+              <dt>model</dt><dd id="solar-model">—</dd>
               <dt>elevation</dt><dd id="solar-elevation">—</dd>
               <dt>azimuth</dt><dd id="solar-azimuth">—</dd>
               <dt>sub-solar lat</dt><dd id="solar-subsolar">—</dd>
               <dt>1 m shadow</dt><dd id="solar-shadow">—</dd>
             </dl>
-            <p class="note">At a lunar pole the Sun stays within 1.54° of the horizon, so elevation and azimuth are not independent — both come from the ephemeris.</p>
+            <p class="note" id="solar-status" role="status" aria-live="polite">At a lunar pole the Sun stays within 1.54° of the horizon; elevation and azimuth come from the selected ephemeris.</p>
           </section>
 
           <section class="panel" data-panel="export">
@@ -252,7 +271,7 @@
 
         <!-- Centre: viewport -->
         <main id="viewport">
-          <canvas id="canvas"></canvas>
+          <canvas id="canvas" aria-label="Interactive lunar terrain viewport">Interactive lunar terrain viewport requires WebGL.</canvas>
           <div id="legend">
             <strong id="legend-title">Lit regolith</strong>
             <span id="legend-note"></span>
@@ -262,8 +281,10 @@
                wherever they appear). -->
           <div
             id="gpu-preview-banner"
+            class="viewport-banner warning"
             hidden
-            style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#ffbf00;color:#1a1206;font-weight:600;font-size:12px;padding:6px 14px;border-radius:4px;z-index:20;pointer-events:none;white-space:nowrap;"
+            role="status"
+            aria-live="polite"
           >GPU PREVIEW — approximate, not the authoritative terrain; Generate to commit</div>
           <!-- Polar night is a real, common state at this site: the Sun spends
                much of each month below the horizon, and the lit view has a
@@ -271,10 +292,19 @@
                presenting a black frame as a rendering failure. -->
           <div
             id="night-banner"
+            class="viewport-banner night"
             hidden
-            style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#2b3a55;color:#cfe0ff;font-weight:600;font-size:12px;padding:6px 14px;border-radius:4px;z-index:20;pointer-events:none;white-space:nowrap;"
+            role="status"
+            aria-live="polite"
           >SUN BELOW HORIZON at this epoch — the lit view is dark. Try epoch 2026-01-10T00:00:00Z + Recompute, another overlay, or Earthshine.</div>
-          <div id="progress-overlay" hidden>
+          <div
+            id="solar-unavailable-banner"
+            class="viewport-banner unavailable"
+            hidden
+            role="alert"
+            aria-live="assertive"
+          >SOLAR UNAVAILABLE — direct sunlight is disabled. Correct the epoch, mode, or kernel directory and recompute.</div>
+          <div id="progress-overlay" hidden role="progressbar" aria-label="Terrain generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="bar"><div id="progress-fill"></div></div>
             <span id="progress-stage">—</span>
           </div>
@@ -291,6 +321,7 @@
               <dt>layers</dt><dd id="insp-layers">—</dd>
               <dt>craters</dt><dd id="insp-craters">—</dd>
               <dt>rocks</dt><dd id="insp-rocks">—</dd>
+              <dt>rock display</dt><dd id="insp-rock-rendering">—</dd>
             </dl>
           </section>
 
@@ -303,7 +334,7 @@
               <dt>semantic</dt><dd id="insp-semantic">—</dd>
               <dt>traversability</dt><dd id="insp-trav">—</dd>
             </dl>
-            <p class="note">Traversability is a synthetic heuristic, not a validated terramechanics prediction.</p>
+            <p class="note">Selected-point traversability is a static Bekker–Wong screening estimate using Apollo/simulant-derived parameters; it is not polar-site validated. The viewport overlay remains a labelled synthetic heuristic.</p>
           </section>
 
           <section class="panel">

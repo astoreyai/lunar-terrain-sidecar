@@ -1,5 +1,8 @@
 # Contributing to lunar-terrain-sidecar
 
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+Questions and support requests are welcome as GitHub issues too.
+
 ## Reporting issues
 
 Open a GitHub issue with: what you ran (the exact command or RPC call), what

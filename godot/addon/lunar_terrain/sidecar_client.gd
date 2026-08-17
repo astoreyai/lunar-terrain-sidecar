@@ -24,7 +24,17 @@ enum State { DISCONNECTED, CONNECTING, CONNECTED }
 ## different major is disconnected immediately — the protocol spec declares a
 ## mismatch a hard error, and continuing with wrong message shapes would
 ## mis-drive generation rather than fail cleanly.
-const CLIENT_PROTOCOL_MAJOR := 1
+const CLIENT_PROTOCOL_MAJOR := 2
+## terrain.getRocks is bounded to 50,000 real model instances by the server,
+## but that valid JSON response can be tens of MiB. Godot's roughly 64 KiB
+## default drops even the 1,166-instance Site01 integration response (~684 KiB)
+## before `response` can be emitted, leaving live synchronization waiting
+## forever. Keep the transport bound explicit and below the loader's 128 MiB
+## JSON-artifact ceiling.
+# The loader accepts at most 16,000,000 float32 height samples. A valid
+# stride-1 fallback for that ceiling is 64 MB raw and about 85.4 MB after
+# base64, before the JSON envelope, so the transport must exceed that bound.
+const MAX_INBOUND_BYTES := 128 * 1024 * 1024
 
 var state: int = State.DISCONNECTED
 var protocol_version: String = ""
@@ -40,6 +50,7 @@ var _inflight: Dictionary = {}
 func connect_to_sidecar(url: String) -> void:
 	last_error = ""
 	_inflight.clear()
+	_socket.inbound_buffer_size = MAX_INBOUND_BYTES
 	var err := _socket.connect_to_url(url)
 	if err != OK:
 		state = State.DISCONNECTED
@@ -50,10 +61,16 @@ func connect_to_sidecar(url: String) -> void:
 
 
 func close() -> void:
+	var announce_disconnect := state != State.DISCONNECTED
 	_socket.close()
 	state = State.DISCONNECTED
 	# An explicit close orphans in-flight requests the same way a drop does.
 	_fail_inflight("client closed the connection")
+	# poll() cannot emit after state is set above, so announce an explicit
+	# transition here. Guarding the prior state makes repeated close calls
+	# idempotent and keeps the signal exactly-once.
+	if announce_disconnect:
+		sidecar_disconnected.emit()
 
 
 func is_connected_to_sidecar() -> bool:
@@ -148,7 +165,11 @@ func call_method(method: String, params: Dictionary = {}) -> int:
 	var payload := {"jsonrpc": "2.0", "id": id, "method": method}
 	if not params.is_empty():
 		payload["params"] = params
-	_socket.send_text(JSON.stringify(payload))
+	var send_error := _socket.send_text(JSON.stringify(payload))
+	if send_error != OK:
+		_inflight.erase(id)
+		last_error = "could not send %s: %s" % [method, error_string(send_error)]
+		return -1
 	return id
 
 

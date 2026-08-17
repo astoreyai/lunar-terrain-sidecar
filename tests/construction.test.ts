@@ -23,6 +23,7 @@ import {
   type TerrainLayer,
 } from '@lts/shared-types';
 import type { TerrainOperation } from '@lts/terrain-protocol';
+import { SITE01_DEM } from './paths.js';
 
 // ---------------------------------------------------------------- fixtures --
 
@@ -456,14 +457,23 @@ describe('construction over the protocol', () => {
     terrainId: 'construction_site',
     seed: 'construction-seed',
     outputDirectory: WORK,
-    site: { latitudeDeg: -89.4, longitudeDeg: -137.5 },
+    site: { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 },
     layers: [{ role: 'context', widthMeters: 60, lengthMeters: 60, resolutionMeters: 0.5 }],
+    dem: { enabled: true, path: SITE01_DEM, applyToRoles: ['context'] },
+    proceduralStack: [],
     craters: { enabled: false },
     rocks: { enabled: false },
+    regolith: { enabled: false },
     solar: { mode: 'ephemeris', epochUtc: '2026-08-03T00:00:00Z' },
   };
 
   beforeAll(async () => {
+    if (!existsSync(SITE01_DEM)) {
+      throw new Error(
+        `required real Site01 DEM is unavailable at ${SITE01_DEM}; ` +
+          'run scripts/fetch-data.sh or set LTS_SITE01_DEM',
+      );
+    }
     rmSync(WORK, { recursive: true, force: true });
     server = await startServer(PORT);
     socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
@@ -491,6 +501,62 @@ describe('construction over the protocol', () => {
     for (const kind of ['ramp', 'pad', 'spoil_pile', 'wheel_track', 'polygonal_cut', 'polygonal_fill']) {
       expect(r.result.operations).toContain(kind);
     }
+  });
+
+  it('rejects Float32-overflowing finite proposals without mutating terrain, masks, or features', async () => {
+    const dataset = (await rpc('terrain.getDataset')).result;
+    const layer = dataset.layers[0];
+    expect(layer.elevationProvenance).toBe('measured_dem');
+
+    const captureMutableBytes = async () => {
+      const response = await rpc('terrain.snapshot');
+      expect(response.error).toBeUndefined();
+      const snapshot = response.result;
+      const layerSnapshot = snapshot.layers.find(
+        (candidate: { layerId: string }) => candidate.layerId === layer.id,
+      );
+      expect(layerSnapshot).toBeDefined();
+      const masks = Object.fromEntries(
+        Object.entries(layerSnapshot.masks)
+          .filter((entry): entry is [string, { file: string }] => entry[1] !== null)
+          .map(([name, blob]) => [name, readFileSync(join(snapshot.directory, blob.file))]),
+      );
+      return {
+        height: readFileSync(join(snapshot.directory, layerSnapshot.heightFile)),
+        masks,
+        featureAndAuditState: readFileSync(join(snapshot.directory, snapshot.stateFile)),
+      };
+    };
+
+    const before = await captureMutableBytes();
+    const additive = await rpc('terrain.applyOperation', {
+      operation: {
+        kind: 'raise',
+        layerId: layer.id,
+        centerXMeters: 0,
+        centerZMeters: 0,
+        radiusMeters: 3,
+        strengthMeters: 1e308,
+      },
+    });
+    const flattenStyle = await rpc('terrain.applyOperation', {
+      operation: {
+        kind: 'pad',
+        layerId: layer.id,
+        centerXMeters: 0,
+        centerZMeters: 0,
+        radiusMeters: 3,
+        strengthMeters: 0,
+        targetElevationMeters: 1e308,
+      },
+    });
+    const after = await captureMutableBytes();
+
+    expect(additive.error?.data?.code).toBe('TERRAIN_INVALID_CONFIG');
+    expect(flattenStyle.error?.data?.code).toBe('TERRAIN_INVALID_CONFIG');
+    expect(after.height).toEqual(before.height);
+    expect(after.masks).toEqual(before.masks);
+    expect(after.featureAndAuditState).toEqual(before.featureAndAuditState);
   });
 
   it('applies a spoil pile, returns its delta, and exports the feature manifest', async () => {

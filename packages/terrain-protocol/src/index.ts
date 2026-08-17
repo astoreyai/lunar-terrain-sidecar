@@ -6,8 +6,9 @@
  * different message shape will silently mis-drive terrain generation otherwise.
  */
 
-export const PROTOCOL_VERSION = '1.0.0';
+export const PROTOCOL_VERSION = '2.0.0';
 export const DEFAULT_PORT = 8768;
+export const ROCK_TRANSFER_ENCODING = 'base64:lts-rock-transfer-v1';
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -76,6 +77,7 @@ export const METHODS = [
   'terrain.getStatus',
   'terrain.getManifest',
   'terrain.getDataset',
+  'terrain.getRocks',
   'terrain.export',
   'terrain.loadConfig',
   'terrain.saveConfig',
@@ -192,6 +194,20 @@ export interface TerrainDeltaSparse {
 }
 
 /**
+ * Sparse semantic-mask update for live consumers. Construction and paint
+ * operations can change classification without moving terrain, so the height
+ * payload above is not sufficient to keep a Godot/world-model client in sync.
+ */
+export interface TerrainDeltaMaskSparse {
+  layerId: string;
+  sampleCount: number;
+  /** base64 uint32le sample indices, row-major into the edited layer. */
+  indices: string;
+  /** base64 uint8 semantic-class indices, one per sample index. */
+  values: string;
+}
+
+/**
  * Above this many changed samples a sparse payload is larger than simply
  * refetching the changed tiles, so the delta omits `sparse` and says why in
  * `sparseOmitted` (spec §19).
@@ -205,19 +221,71 @@ export const SPARSE_SAMPLE_CAP = 65536;
  */
 export const DELTA_WINDOW = 256;
 
+/**
+ * Server-authored identity of one complete terrain baseline. Consumers compare
+ * the opaque hashes; they do not need to reproduce JavaScript serialisation or
+ * decide which provenance and physics fields are load-bearing.
+ */
+export interface TerrainBaselineLayerChecksums {
+  layerId: string;
+  heightSha256: string;
+  semanticSha256: string;
+  /** `null` means the layer has no disturbance channel. */
+  disturbanceSha256: string | null;
+  /** `null` means the layer has no elevation-source channel. */
+  elevationSourceSha256: string | null;
+}
+
+export interface TerrainBaselineMetadata {
+  schemaVersion: 1;
+  /** Immutable geometry, origin, coordinates, generator inputs and provenance. */
+  immutableIdentitySha256: string;
+  /** All layer-channel checksums plus the complete rock-physics checksum. */
+  worldStateSha256: string;
+  layers: TerrainBaselineLayerChecksums[];
+  rocks: {
+    totalCount: number;
+    physicalCount: number;
+    physicsSha256: string;
+    /**
+     * Digest of the complete decoded `terrain.getRocks.transferData` physics
+     * transfer (`transferEncoding` = `base64:lts-rock-transfer-v1`). Encoding
+     * v1 is: ASCII `LTS_ROCK_TRANSFER_V1\0`, rock count as
+     * uint32 LE, then rocks ordered by id; each record is uint32-LE UTF-8 id
+     * byte length + id bytes, position xyz / rotation xyzw / scale xyz as
+     * IEEE-754 Float64 LE, and one physical byte (0 or 1).
+     */
+    transferSha256: string;
+  };
+}
+
 export interface TerrainDelta {
   deltaId: string;
+  /** Monotonic installed-world revision; pair with sequenceNumber for identity. */
+  datasetRevision: number;
   sequenceNumber: number;
   timestamp: string;
   affectedBounds: { minX: number; minZ: number; maxX: number; maxZ: number };
   changedTiles: string[];
   operations: TerrainOperation[];
+  /** Exact number of rock transforms moved while applying this delta. */
+  rocksReseated: number;
+  /** Transfer-digest chain binding the complete rock physics before this edit. */
+  previousRockTransferSha256: string;
+  /** Expected complete rock physics after this edit and any required reseating. */
+  resultingRockTransferSha256: string;
   /** Number of height samples this delta changed (0 for a mask-only paint). */
   changedSampleCount: number;
   /** Sparse changed-sample payload; absent above {@link SPARSE_SAMPLE_CAP}. */
   sparse?: TerrainDeltaSparse;
   /** Why `sparse` is absent, when it is — never silently omitted. */
   sparseOmitted?: string;
+  /** Exact semantic-mask samples changed by this operation, when any. */
+  maskSparse?: TerrainDeltaMaskSparse;
+  /** Number of semantic-mask samples changed by this operation. */
+  changedMaskSampleCount: number;
+  /** Why `maskSparse` is absent when changedMaskSampleCount is non-zero. */
+  maskSparseOmitted?: string;
   previousChecksum: string;
   resultingChecksum: string;
   /**

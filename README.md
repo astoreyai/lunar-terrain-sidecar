@@ -72,19 +72,30 @@ The kernels and DEMs are public NASA products, not vendored in the repo:
 ```bash
 bash scripts/fetch-data.sh          # downloads to ./data, verifies SHA-256
 export LTS_SPICE_DIR="$PWD/data/spice_kernels"
+export LTS_SITE01_DEM="$PWD/data/lola_5mpp/Site01_final_adj_5mpp_surf.tif"
 ```
 
-The script fetches the JPL DE440 kernels (NAIF) and the PGDA/LOLA 5 m/px
-Site01 DEM (~87 MB total), verifies every checksum against the copies this
-repository was validated with, and prints the config/env lines that point the
-tools at the downloads. `LTS_SPICE_DIR` overrides the default kernel
-directory; DEM paths live in each site config (`dem.path`).
+The script fetches the JPL DE440 kernels (NAIF), the PGDA/LOLA 5 m/px Site01
+and Shoemaker DEMs, and the LOLA LDEM_75S image/label used by far-field horizon
+queries (266,871,140 bytes total). It verifies every checksum against the exact
+copies this repository was validated with and prints the config/env lines that
+point the tools at the downloads. `LTS_SPICE_DIR` overrides the default kernel
+directory; DEM paths live in each site config (`dem.path`); `LTS_SITE01_DEM`
+is what the sidecar reports to the browser UI (`terrain.capabilities`) so the
+UI's DEM field fills itself on connect; and `LTS_LDEM_75S` selects the
+far-field label.
 
-The CLI runs through `tsx` (Node ≥ 20 required): `npm run terrain -- <cmd>`.
+The CLI runs through `tsx` (Node ≥ 20 runs it; `.nvmrc` pins 26.7.0, the build the byte-reproducibility oracle and CI use — other Node majors run and pass the tests but may differ in the last ulp of two JSON feature manifests, see `docs/reproducibility.md`): `npm run terrain -- <cmd>`.
 The `bin` entry in package.json points at the TypeScript source and is only
 runnable where `tsx` is installed; there is no compiled standalone binary.
 
 ## Quick start
+
+The committed example records the absolute Site01 path used for its published
+reproducibility oracle. On a fresh checkout, run `scripts/fetch-data.sh` and
+replace `dem.path` in the configuration below with the absolute Site01 path the
+script prints before running these commands. A missing or different path is
+rejected; the generator never substitutes terrain data.
 
 ```bash
 pnpm install    # or: npm install
@@ -131,27 +142,39 @@ Provenance and regeneration commands: [`docs/media/README.md`](docs/media/README
 
 Copy `godot/addon/lunar_terrain` into your project's `addons/`, enable
 **Lunar Terrain Sidecar** in Project Settings → Plugins, and a dock appears with
-a connection indicator, configuration picker, seed field, Generate / Regenerate
-/ Import, live progress, the artifact list with stale-file detection, validation
-results, and the declared coordinate system.
+a text-labelled connection state, configuration/seed/export controls, Generate /
+Regenerate / Import, live progress, validation results, and the declared
+coordinate system. The same dock exposes authoritative point inspection,
+Bekker–Wong screening with its applicability caveats, analytic or DE440 solar
+geometry, near/far-field horizon queries, data provenance, and simulated
+construction controls. It is visibly labelled **not a live command interface**.
 
 The addon speaks the same JSON-RPC protocol as the browser UI
-(`sidecar_client.gd`), so the editor can drive generation directly and import
-the artifacts the sidecar writes.
+(`sidecar_client.gd`). Static import rejects an incompatible schema/frame,
+missing or over-limit data, malformed rock transforms, and checksum mismatches
+before allocating scene nodes. Once imported, `terrain_live_sync.gd` verifies
+the server revision, immutable geometry/origin/configuration identity, every
+consumed raster checksum, and the complete rock-physics hash before enabling
+edits. It applies sparse payloads (or exact tile fallbacks above 65,536
+samples) and rebuilds only intersecting render/collision chunks. Physical rocks
+get real collision on their own physics layer; the perception focus API keeps
+selected visual chunks at source-grid resolution.
 
 ```
 LunarTerrainRoot
-├── ContextTerrain / MissionTerrain / OperationalTerrain   MeshInstance3D
+├── ContextTerrain / MissionTerrain / OperationalTerrain   chunk containers
+│   └── MeshInstance3D chunks (focused chunks can be full resolution)
 ├── TerrainCollision                                       StaticBody3D
-│   └── non-overlapping HeightMapShape3D per tier
+│   └── non-overlapping, spatially chunked HeightMapShape3D regions
 ├── PhysicalRocks / VisualRocks                            MultiMeshInstance3D
+├── PhysicalRockCollision                                  bounded StaticBody3D batches
 └── TerrainMetadata                                        seed, frame, provenance
 ```
 
 ## Measured results
 
 All numbers below were produced by the commands in this README on this machine
-(AMD64, Node 20.20.2, Godot 4.6.3-stable), not estimated.
+(AMD64, Node 26.7.0, Godot 4.6.3-stable), not estimated.
 
 **Demonstration site** — `examples/south_pole_site_01`, anchored at
 89.463°S 137.490°W on the real `Site01` PGDA DEM:
@@ -172,18 +195,20 @@ now realises ~4.6× more rocks (which is the point — the old figure understate
 the cited model). Timings are one sample on one machine; `npm run bench:terrain`
 produces the full measured table (`benchmarks/`).
 
-**Godot round trip** (`tests/godot-roundtrip.test.ts`, 145 probe points across
+**Godot round trip** (`tests/godot-roundtrip.test.ts`, 166 fixed probe points across
 all three tiers, raycast against real collision geometry):
 
 | | |
 |---|---|
 | probes missed | 0 |
-| max elevation error, on-grid | **9.0e-6 m** |
-| max elevation error, off-grid | 1.0e-2 m (bilinear vs Godot's triangulation) |
-| addon loader read error | 2.22e-16 m |
+| max elevation error, on-grid | **8.70e-6 m** |
+| max elevation error, off-grid | **1.15e-4 m** (bilinear vs Godot's triangulation) |
+| addon loader read error | 1.78e-15 m |
 | collision normals | all `normal_y > 0` (winding correct) |
+| rock collision | 388 physical rocks = 388 shapes; 876 visual-only rocks = 0 shapes |
+| incremental build | 29 frame yields; probe, chunk and collision results identical to synchronous build |
 
-**Godot addon lifecycle** (`tests/godot-integration.test.ts`, all 21 steps of
+**Godot addon lifecycle** (`tests/godot-integration.test.ts`, all 49 steps of
 spec §26 against a live sidecar in headless Godot):
 
 | | |
@@ -192,44 +217,62 @@ spec §26 against a live sidecar in headless Godot):
 | cut/fill balance on a mass-conserving edit | **0.000%** |
 | excavation 0.40 m | 0.1039 m → −0.2961 m |
 | collision surface after reload | −0.2961 m — followed exactly |
-| editor dock | builds 24 controls, all required actions present |
+| live baseline | revision + geometry + origin + configuration + raster/rock hashes agree |
+| editor dock | required visual/assistive actions present; no horizontal clipping at 100% or 200% scale |
 
-**Test suite**: 257 tests across 15 files. Suites gated on local data,
-kernels, or a Godot binary **skip loudly** when those are absent — a fresh
-clone without datasets runs the dataset-free majority and reports the rest
-as skipped, never as fake passes.
+**Godot release package** (`tests/godot-package.test.ts`, checksum-pinned
+Site01 + official Godot 4.6.3 editor/export template):
+
+| | |
+|---|---|
+| persisted collision | 186 physical rocks = 186 shapes in 4 bodies |
+| saved-scene reload raycast error | 1.82e-6 m |
+| exported Linux binary + PCK | identical terrain/rock counts, coordinates and raycast error |
+
+A separate full shipped-Site01 acceptance persisted a 67,370,056-byte
+`PackedScene`, then launched the official 71,075,864-byte Linux binary with its
+67,481,176-byte PCK. Both reload paths retained 170 terrain collision chunks and
+931 physical rocks = 931 collision shapes in 9 bodies; the origin raycast error
+was 6.52e-7 m.
+
+**Test suite**: 345 tests across 17 files. The two required CI jobs cover all
+17 files and reject any skipped, pending, or disabled test in their machine-readable
+Vitest reports. The real-data job fetches and verifies every NASA/PGDA/PDS/JPL
+source plus the official Godot editor and Linux export template before running.
+Do not treat a partial local run with missing prerequisites as acceptance.
 
 ```bash
 npm test                        # full suite (vitest)
 bash scripts/fetch-data.sh      # fetch public datasets + kernels, then:
-export LTS_SITE01_DEM=...       #   enables DEM-gated suites (UI, Godot,
-export LTS_LDEM_75S=...         #   provenance, parallel, far-horizon)
-export LTS_SPICE_DIR=...        #   enables the DE440 suites
+export LTS_SITE01_DEM="$PWD/data/lola_5mpp/Site01_final_adj_5mpp_surf.tif"
+export LTS_LDEM_75S="$PWD/data/lola_ldem/ldem_75s_120m.lbl"
+export LTS_SPICE_DIR="$PWD/data/spice_kernels"
 ```
 
 The Godot suites additionally need a Godot 4 editor binary on `LTS_GODOT`
-or PATH. Hosted CI runs the dataset-free majority (~160 of 257 tests) and
-exercises the skip path for the rest; the kernel/DEM/Godot-gated assertions
-— including the ephemeris-accuracy and engine-round-trip claims — need the
-data fetched locally. `examples/south_pole_site_01/expected-checksums.sha256`
-is the committed oracle for the 183-artifact reproduce gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
-workflow.
+or PATH. Hosted CI provisions the exact pinned prerequisites and requires the
+full 345-test matrix; it does not accept a missing-data skip as success.
+`examples/south_pole_site_01/expected-checksums.sha256` is the committed oracle
+for the 183-artifact reproduce gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+the development workflow.
 
 ```
 tests/lunar-solar.ephemeris.test.ts   23   ephemeris vs physical invariants
 tests/lunar-solar.de.test.ts          12   TS DE440 reader vs frozen JPL reference
-tests/lunar-dem.real-data.test.ts     19   real LOLA products vs GDAL
+tests/lunar-dem.real-data.test.ts     23   real LOLA products vs GDAL
 tests/lunar-features.test.ts          47   crater/rock models, RNG, estimator
 tests/terramech.test.ts               19   Bekker-Wong vs hand-derived formulas
-tests/protocol.test.ts                21   real WebSocket JSON-RPC server
-tests/construction.test.ts            20   spec-11 features, volumes, mass balance
+tests/protocol.test.ts                26   real WebSocket JSON-RPC server
+tests/construction.test.ts            21   spec-11 features, volumes, mass balance
 tests/history.test.ts                 16   operation log + deterministic replay
 tests/sync.test.ts                     7   sparse deltas + snapshot/restore
+tests/snapshot-state.test.ts          12   complete real-data snapshot atomicity
 tests/parallel.test.ts                 4   worker-thread byte-identity
 tests/provenance.test.ts               4   per-sample provenance + solar labels
-tests/godot-roundtrip.test.ts         10   headless Godot collision agreement
-tests/godot-integration.test.ts        9   full spec-26 addon lifecycle + dock
-tests/interactive-ui.test.ts          35   real Chromium + WebGL, screenshots
+tests/godot-roundtrip.test.ts         47   headless Godot collision agreement
+tests/godot-integration.test.ts       16   full spec-26 addon lifecycle + dock
+tests/godot-package.test.ts            6   save/reopen + official Linux package
+tests/interactive-ui.test.ts          44   real Chromium + WebGL, screenshots
 tests/far-horizon.test.ts             11   far-field horizon ring (ADR 0006)
 ```
 
@@ -269,7 +312,8 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 
 - **Solar accuracy is now measured, not estimated.** A dependency-free
   TypeScript reader for the real JPL DE440 kernels (SPK + binary PCK lunar
-  orientation, on-disk at `/mnt/projects/datasets/spice_kernels`) provides an
+  orientation, fetched by `scripts/fetch-data.sh` and located via
+  `LTS_SPICE_DIR`) provides an
   `ephemeris_de` mode and measures the default Meeus/IAU chain against JPL's
   integrated truth: **max 0.0111° sub-solar separation over 2020–2049** (reproducible: `npm run terrain -- de-compare --months 360`; a denser dev-time sweep measured 0.0118°) — the
   literature's 0.01–0.03° budget holds at its favourable end. The default mode
@@ -294,20 +338,31 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 - **Undo is an inverse operation, not a snapshot.** It re-applies the opposite
   edit. For `raise`/`lower`/`berm`/`trench` that is exact; for `smooth` and
   `flatten`, which are not invertible, undo will not restore the prior surface.
-- **Off-grid elevation agreement is ~1 cm**, because Godot triangulates each
+- **Off-grid elevation agreement is 0.12 mm in the fixed real-data probe set**,
+  because Godot triangulates each
   heightfield cell into two flat triangles while the sidecar interpolates
-  bilinearly. On-grid agreement is 9 µm.
+  bilinearly. On-grid agreement is 8.7 µm.
 - **GPU and WASM acceleration are not implemented.** CPU generation is the
   reference implementation and the only implementation.
 - **Rock count estimates are background expectations** — rim-excess rocks are
   added on top per crater (realised counts ran ~2.2× the background on the
   shipped demo) and slope rejection subtracts; both depend on terrain not yet
   generated.
+- **Godot import/live rock transfer is capped at 50,000 instances.** The
+  sidecar preserves collision-bearing rocks first and reports `truncated`, but
+  the addon refuses a truncated baseline rather than silently installing
+  incomplete collision. Larger generated/exported populations remain valid for
+  non-Godot consumers; paging is not implemented.
+- **The loopback sidecar trusts the local OS account.** It has no bearer-token
+  authentication and accepts native clients without an HTTP `Origin`, so it is
+  suitable only when other users/processes on the same host are trusted. Do not
+  run it on a shared or hostile multi-user machine under an account whose files
+  those processes must not access.
 
 ## Citing
 
 If you use this software, please cite it via [`CITATION.cff`](CITATION.cff)
-(Storey, McCardle & Imtiaz, *lunar-terrain-sidecar*, v0.1.2, MIT). A JOSS software paper
+(Storey, McCardle & Imtiaz, *lunar-terrain-sidecar*, v0.2.0, MIT). A JOSS software paper
 draft is in [`paper/paper.md`](paper/paper.md). Please also credit the data:
 LOLA (Smith et al. 2010), the PGDA polar DEMs (Barker et al. 2021), and JPL
 DE440 (Park et al. 2021).
@@ -324,5 +379,5 @@ godot/      addon/lunar_terrain (loader, sidecar client, editor dock, plugin)
             example-project     (round-trip + integration harnesses)
 examples/   south_pole_site_01
 docs/       decisions/
-tests/      257 tests across 15 files
+tests/      345 tests across 17 files
 ```

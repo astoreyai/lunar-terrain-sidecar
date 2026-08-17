@@ -50,6 +50,7 @@ import {
   demAvailable,
   fillNoData,
   openDemRaster,
+  projectionMetadataForFrame,
   resampleDemToLocal,
   type DemRaster,
 } from '@lts/lunar-dem';
@@ -217,7 +218,7 @@ async function generateTerrainImpl(
     };
   });
 
-  const frame = buildLocalFrame(config.site.latitudeDeg, config.site.longitudeDeg);
+  let frame = buildLocalFrame(config.site.latitudeDeg, config.site.longitudeDeg);
   let datumElevationM = config.site.datumElevationM;
 
   // ------------------------------------------------------------- real DEM --
@@ -234,47 +235,70 @@ async function generateTerrainImpl(
       );
     }
     raster = await openDemRaster(config.dem.path);
-    dataSources.push({
-      id: raster.provenance.id,
-      description: raster.provenance.description,
-      path: raster.provenance.path,
-      citation: raster.provenance.citation,
-      resolutionMeters: raster.provenance.resolutionMeters,
-      effectiveResolutionMeters:
-        config.dem.effectiveResolutionMeters ?? raster.provenance.effectiveResolutionMeters,
-    });
-
-    for (const layer of layers) {
-      if (!config.dem.applyToRoles.includes(layer.role)) continue;
-      const res = resampleDemToLocal(raster, frame, {
-        minX: layer.bounds.minX,
-        minZ: layer.bounds.minZ,
-        resolutionMeters: layer.horizontalResolutionMeters,
-        widthSamples: layer.widthSamples,
-        heightSamples: layer.heightSamples,
+    try {
+      frame = buildLocalFrame(
+        config.site.latitudeDeg,
+        config.site.longitudeDeg,
+        raster.projection,
+      );
+      const sourceFiles = (raster.provenance.sourceFiles ?? []).map((sourceFile) => {
+        if (!sourceFile.sha256) {
+          throw new Error(`DEM reader did not bind source identity for ${sourceFile.path}`);
+        }
+        return { ...sourceFile, sha256: sourceFile.sha256 };
       });
-      if (res.noDataFraction > 0) {
-        const { filled } = fillNoData(res.data, layer.widthSamples, layer.heightSamples);
-        notes.push(
-          `${layer.id}: ${(res.noDataFraction * 100).toFixed(2)}% of samples were no-data in ` +
-            `${raster.provenance.id}; ${filled} filled by neighbour averaging.`,
-        );
+      if (sourceFiles.length === 0) {
+        throw new Error(`DEM reader did not report source files for ${raster.provenance.path}`);
       }
-      layer.heightData.set(res.data);
-      layer.sourceEffectiveResolutionMeters =
-        config.dem.effectiveResolutionMeters ?? raster.provenance.effectiveResolutionMeters;
-      layer.elevationProvenance = 'measured_dem';
-      layer.masks.elevationSource?.fill(ELEVATION_SOURCES.indexOf('measured'));
-      datumElevationM = res.datumElevationM;
+      const sourceIdentity =
+        sourceFiles.length === 1
+          ? { sha256: sourceFiles[0].sha256 }
+          : { files: sourceFiles };
+      dataSources.push({
+        id: raster.provenance.id,
+        description: raster.provenance.description,
+        path: raster.provenance.path,
+        citation: raster.provenance.citation,
+        resolutionMeters: raster.provenance.resolutionMeters,
+        effectiveResolutionMeters:
+          config.dem.effectiveResolutionMeters ?? raster.provenance.effectiveResolutionMeters,
+        ...sourceIdentity,
+      });
 
-      if (res.sourcePixelsPerSample < 1) {
-        notes.push(
-          `${layer.id} samples at ${layer.horizontalResolutionMeters} m from a ` +
-            `${raster.resolutionMeters} m product: ` +
-            `${(1 / res.sourcePixelsPerSample).toFixed(1)}x oversampled. Elevations between ` +
-            `source pixels are interpolated, not measured.`,
-        );
+      for (const layer of layers) {
+        if (!config.dem.applyToRoles.includes(layer.role)) continue;
+        const res = resampleDemToLocal(raster, frame, {
+          minX: layer.bounds.minX,
+          minZ: layer.bounds.minZ,
+          resolutionMeters: layer.horizontalResolutionMeters,
+          widthSamples: layer.widthSamples,
+          heightSamples: layer.heightSamples,
+        });
+        if (res.noDataFraction > 0) {
+          const { filled } = fillNoData(res.data, layer.widthSamples, layer.heightSamples);
+          notes.push(
+            `${layer.id}: ${(res.noDataFraction * 100).toFixed(2)}% of samples were no-data in ` +
+              `${raster.provenance.id}; ${filled} filled by neighbour averaging.`,
+          );
+        }
+        layer.heightData.set(res.data);
+        layer.sourceEffectiveResolutionMeters =
+          config.dem.effectiveResolutionMeters ?? raster.provenance.effectiveResolutionMeters;
+        layer.elevationProvenance = 'measured_dem';
+        layer.masks.elevationSource?.fill(ELEVATION_SOURCES.indexOf('measured'));
+        datumElevationM = res.datumElevationM;
+
+        if (res.sourcePixelsPerSample < 1) {
+          notes.push(
+            `${layer.id} samples at ${layer.horizontalResolutionMeters} m from a ` +
+              `${raster.resolutionMeters} m product: ` +
+              `${(1 / res.sourcePixelsPerSample).toFixed(1)}x oversampled. Elevations between ` +
+              `source pixels are interpolated, not measured.`,
+          );
+        }
       }
+    } finally {
+      raster.close?.();
     }
   } else {
     limitations.push(
@@ -843,7 +867,12 @@ async function generateTerrainImpl(
       site: { latitudeDeg: config.site.latitudeDeg, longitudeDeg: config.site.longitudeDeg },
       datumElevationM,
     },
-    coordinateSystem: defaultCoordinateSystem(),
+    coordinateSystem: {
+      ...defaultCoordinateSystem(),
+      ...(raster
+        ? { source_projection: projectionMetadataForFrame(raster.projection, frame) }
+        : {}),
+    },
     layers,
     featureManifest: features,
     provenance: {

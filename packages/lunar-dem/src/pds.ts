@@ -30,6 +30,7 @@ export interface PdsLabel {
   sampleProjectionOffset: number;
   /** Pixel index (0-based) of projected y = 0. */
   lineProjectionOffset: number;
+  mapProjectionType: string;
   centerLatitudeDeg: number;
   centerLongitudeDeg: number;
   radiusM: number;
@@ -38,7 +39,7 @@ export interface PdsLabel {
   /** Path of the .img file the label points at. */
   imagePath: string;
   /** Body-fixed frame name, e.g. "MEAN EARTH/POLAR AXIS OF DE421". */
-  coordinateSystemName?: string;
+  coordinateSystemName: string;
   /** Raw label text, retained for provenance. */
   raw: string;
 }
@@ -62,27 +63,41 @@ function parseNumber(raw: string, key: string): number | undefined {
 }
 
 /** Parse a detached PDS3 label (`.lbl`). */
-export function readPdsLabel(labelPath: string): PdsLabel {
-  if (!existsSync(labelPath)) {
+export function readPdsLabel(labelPath: string, openedBytes?: Buffer): PdsLabel {
+  if (openedBytes === undefined && !existsSync(labelPath)) {
     throw new Error(`PDS label not found: ${labelPath}`);
   }
-  const raw = readFileSync(labelPath, 'latin1');
+  const raw = openedBytes?.toString('latin1') ?? readFileSync(labelPath, 'latin1');
 
   const lines = parseNumber(raw, 'LINES');
   const lineSamples = parseNumber(raw, 'LINE_SAMPLES');
   const sampleBits = parseNumber(raw, 'SAMPLE_BITS');
   const sampleType = parseScalar(raw, 'SAMPLE_TYPE');
   const mapScale = parseNumber(raw, 'MAP_SCALE');
+  const mapProjectionType = parseScalar(raw, 'MAP_PROJECTION_TYPE');
+  const sampleProjectionOffset = parseNumber(raw, 'SAMPLE_PROJECTION_OFFSET');
+  const lineProjectionOffset = parseNumber(raw, 'LINE_PROJECTION_OFFSET');
+  const centerLatitudeDeg = parseNumber(raw, 'CENTER_LATITUDE');
+  const centerLongitudeDeg = parseNumber(raw, 'CENTER_LONGITUDE');
+  const radiusKm = parseNumber(raw, 'A_AXIS_RADIUS');
+  const coordinateSystemName = parseScalar(raw, 'COORDINATE_SYSTEM_NAME');
 
   if (
     lines === undefined ||
     lineSamples === undefined ||
     sampleBits === undefined ||
     sampleType === undefined ||
-    mapScale === undefined
+    mapScale === undefined ||
+    mapProjectionType === undefined ||
+    sampleProjectionOffset === undefined ||
+    lineProjectionOffset === undefined ||
+    centerLatitudeDeg === undefined ||
+    centerLongitudeDeg === undefined ||
+    radiusKm === undefined ||
+    coordinateSystemName === undefined
   ) {
     throw new Error(
-      `PDS label ${labelPath} is missing required keywords (LINES, LINE_SAMPLES, SAMPLE_BITS, SAMPLE_TYPE, MAP_SCALE)`,
+      `PDS label ${labelPath} is missing required raster/projection metadata`,
     );
   }
 
@@ -107,8 +122,6 @@ export function readPdsLabel(labelPath: string): PdsLabel {
     throw new Error(`PDS image file for label ${labelPath} was not found`);
   }
 
-  const radiusKm = parseNumber(raw, 'A_AXIS_RADIUS');
-
   return {
     lines,
     lineSamples,
@@ -117,13 +130,14 @@ export function readPdsLabel(labelPath: string): PdsLabel {
     scalingFactor: parseNumber(raw, 'SCALING_FACTOR') ?? 1,
     offset: parseNumber(raw, 'OFFSET') ?? 0,
     mapScale,
-    sampleProjectionOffset: parseNumber(raw, 'SAMPLE_PROJECTION_OFFSET') ?? (lineSamples - 1) / 2,
-    lineProjectionOffset: parseNumber(raw, 'LINE_PROJECTION_OFFSET') ?? (lines - 1) / 2,
-    centerLatitudeDeg: parseNumber(raw, 'CENTER_LATITUDE') ?? -90,
-    centerLongitudeDeg: parseNumber(raw, 'CENTER_LONGITUDE') ?? 0,
-    radiusM: radiusKm !== undefined ? radiusKm * 1000 : 1_737_400,
+    sampleProjectionOffset,
+    lineProjectionOffset,
+    mapProjectionType,
+    centerLatitudeDeg,
+    centerLongitudeDeg,
+    radiusM: radiusKm * 1000,
     missingConstant: parseNumber(raw, 'MISSING_CONSTANT'),
-    coordinateSystemName: parseScalar(raw, 'COORDINATE_SYSTEM_NAME'),
+    coordinateSystemName,
     imagePath,
     raw,
   };
@@ -191,6 +205,7 @@ export function readPdsWindow(
   row0: number,
   width: number,
   height: number,
+  openedFd?: number,
 ): PdsWindow {
   if (label.sampleBits !== 16) {
     throw new Error(`unsupported SAMPLE_BITS=${label.sampleBits}; this reader handles 16-bit`);
@@ -216,7 +231,8 @@ export function readPdsWindow(
   const out = new Float32Array(w * h);
   const rowBuf = Buffer.allocUnsafe(w * bytesPerSample);
 
-  const fd = openSync(label.imagePath, 'r');
+  const ownsFd = openedFd === undefined;
+  const fd = openedFd ?? openSync(label.imagePath, 'r');
   try {
     for (let r = 0; r < h; r++) {
       const fileOffset = (r0 + r) * rowBytes + c0 * bytesPerSample;
@@ -242,7 +258,7 @@ export function readPdsWindow(
       }
     }
   } finally {
-    closeSync(fd);
+    if (ownsFd) closeSync(fd);
   }
 
   return { col0: c0, row0: r0, width: w, height: h, data: out };

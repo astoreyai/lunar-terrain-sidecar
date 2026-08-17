@@ -1,0 +1,20 @@
+; Isolated Godot project for the save/reopen/export/package acceptance gate.
+; The test installs the production addon and writes packed_terrain.scn before
+; this project's main scene is launched.
+
+config_version=5
+
+[application]
+
+config/name="Lunar Terrain Package Acceptance"
+run/main_scene="res://package_runtime.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[physics]
+
+3d/default_gravity=1.62
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

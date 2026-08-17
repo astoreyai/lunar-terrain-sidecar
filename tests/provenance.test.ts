@@ -163,6 +163,7 @@ describe('manual solar override provenance (paper Summary claim)', () => {
     });
     const { dataset, solar } = await generateTerrain(config, { workerThreads: 1 });
     expect(solar.model).toBe('manual_override');
+    expect(dataset.coordinateSystem.source_projection).toBeUndefined();
     const limitations = dataset.provenance.limitations.join(' ');
     expect(limitations).toContain('MANUALLY');
     expect(limitations).toContain('do not correspond to any real epoch');

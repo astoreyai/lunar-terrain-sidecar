@@ -2,8 +2,9 @@
  * Live terrain sync (spec §19): sparse changed-sample deltas, cheap change
  * polling, and full snapshots with checksum-validated restore.
  *
- * Everything runs against a real WebSocket sidecar on a procedurally generated
- * (non-flat — a flat site would make every sparse claim trivially true) site:
+ * Everything runs against a real WebSocket sidecar and a small grid derived
+ * directly from the real NASA/PGDA Site01 GeoTIFF. No procedural relief,
+ * crater, rock, or regolith generator contributes test data:
  *
  *  (a) an edit's delta carries a sparse payload that, applied to a pre-edit
  *      copy of the layer, reproduces the post-edit heights EXACTLY;
@@ -14,19 +15,20 @@
  *      returns an empty union at the head sequence;
  *  (d) pruned and unknown sequence numbers fail with DISTINCT structured
  *      errors, because the client remedy differs (resync vs caller bug);
- *  (e) snapshot → edit → restore returns the terrain to the snapshotted
- *      heights bit-exactly and resets the history to a new baseline;
+ *  (e) snapshot → edit → restore returns terrain and its retained audit/sync
+ *      history to the snapshotted state;
  *  (f) a tampered snapshot is refused with the checksum error and the live
  *      dataset is left untouched.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { WebSocketServer } from 'ws';
 import { startServer } from '../apps/headless-server/src/server.js';
 import { DELTA_WINDOW, SPARSE_SAMPLE_CAP } from '@lts/terrain-protocol';
+import { SITE01_DEM } from './paths.js';
 
 describe('live sync over the protocol', () => {
   // Unique across ALL test files: 8791 (protocol), 8793/8795 (godot), 8801
@@ -39,6 +41,7 @@ describe('live sync over the protocol', () => {
   let server: WebSocketServer;
   let socket: WebSocket;
   let nextId = 1;
+  let datasetRevision = -1;
 
   function rpc(method: string, params?: Record<string, unknown>): Promise<any> {
     const id = nextId++;
@@ -58,22 +61,22 @@ describe('live sync over the protocol', () => {
 
   // 300 m at 0.5 m is 601² = 361 201 samples: big enough that a wide brush
   // (test b) changes more than SPARSE_SAMPLE_CAP samples, small enough to
-  // generate in well under a second. Real seed-dependent fBm relief — a flat
-  // default site would make the sparse round-trip trivially tiny.
+  // stay fast. Heights are resampled only from the real Site01 DEM.
   const baseConfig = {
     terrainId: 'sync_site',
     outputDirectory: WORK,
     site: { latitudeDeg: -89.4, longitudeDeg: -137.5 },
     layers: [{ role: 'context', widthMeters: 300, lengthMeters: 300, resolutionMeters: 0.5 }],
-    proceduralStack: [
-      {
-        id: 'base',
-        model: 'fbm',
-        fractal: { octaves: 5, lacunarity: 2, persistence: 0.5, frequency: 0.05, amplitude: 1.5 },
-      },
-    ],
+    dem: {
+      enabled: true,
+      path: SITE01_DEM,
+      applyToRoles: ['context'],
+      effectiveResolutionMeters: 17.5,
+    },
+    proceduralStack: [],
     craters: { enabled: false },
     rocks: { enabled: false },
+    regolith: { enabled: false },
     solar: { mode: 'ephemeris', epochUtc: '2026-08-03T00:00:00Z' },
   };
 
@@ -84,7 +87,10 @@ describe('live sync over the protocol', () => {
     for (let i = 0; i < 600; i++) {
       await new Promise((r) => setTimeout(r, 100));
       const s = (await rpc('terrain.getStatus', { jobId })).result;
-      if (s.status === 'complete') return;
+      if (s.status === 'complete') {
+        datasetRevision = Number((await rpc('terrain.getDataset')).result.datasetRevision);
+        return;
+      }
       if (s.status === 'failed' || s.status === 'cancelled') {
         throw new Error(`generate ${seed} ended ${s.status}: ${JSON.stringify(s.error)}`);
       }
@@ -129,6 +135,11 @@ describe('live sync over the protocol', () => {
   }
 
   beforeAll(async () => {
+    if (!existsSync(SITE01_DEM)) {
+      throw new Error(
+        `real Site01 DEM is required at ${SITE01_DEM}; run scripts/fetch-data.sh or set LTS_SITE01_DEM`,
+      );
+    }
     rmSync(WORK, { recursive: true, force: true });
     server = await startServer(PORT);
     socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
@@ -236,7 +247,18 @@ describe('live sync over the protocol', () => {
 
     // Fresh baseline: head is 0 and asking for 0 is an empty union.
     const empty = (await rpc('terrain.getChangedSince', { sequenceNumber: 0 })).result;
-    expect(empty).toEqual({ fromSequence: 0, toSequence: 0, changedTiles: [], perLayer: [] });
+    expect(empty).toMatchObject({
+      fromSequence: 0,
+      toSequence: 0,
+      datasetRevision,
+      terrainId: baseConfig.terrainId,
+      seed: 'sync-changed',
+      baselineRequired: true,
+      changedTiles: [],
+      perLayer: [],
+    });
+    expect(empty.layerChecksums[layerId].heightSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(empty.layerChecksums[layerId].maskSha256).toMatch(/^[0-9a-f]{64}$/);
 
     // Three overlapping edits around the origin: their changed-tile lists
     // overlap heavily, so a correct union is strictly smaller than the sum.
@@ -258,7 +280,9 @@ describe('live sync over the protocol', () => {
       deltas.push(r.result.delta);
     }
 
-    const since0 = (await rpc('terrain.getChangedSince', { sequenceNumber: 0 })).result;
+    const since0 = (
+      await rpc('terrain.getChangedSince', { sequenceNumber: 0, datasetRevision })
+    ).result;
     expect(since0.fromSequence).toBe(0);
     expect(since0.toSequence).toBe(3);
     const expectedUnion = new Set<string>(deltas.flatMap((d) => d.changedTiles));
@@ -275,13 +299,24 @@ describe('live sync over the protocol', () => {
     ]);
 
     // A mid-log poll unions only the deltas at or after the given sequence.
-    const since2 = (await rpc('terrain.getChangedSince', { sequenceNumber: 2 })).result;
+    const since2 = (
+      await rpc('terrain.getChangedSince', { sequenceNumber: 2, datasetRevision })
+    ).result;
     expect(new Set(since2.changedTiles)).toEqual(new Set(deltas[2].changedTiles));
     expect(since2.perLayer).toEqual([{ layerId, changedSampleCount: deltas[2].changedSampleCount }]);
 
     // At the head: nothing to report.
-    const atHead = (await rpc('terrain.getChangedSince', { sequenceNumber: 3 })).result;
-    expect(atHead).toEqual({ fromSequence: 3, toSequence: 3, changedTiles: [], perLayer: [] });
+    const atHead = (
+      await rpc('terrain.getChangedSince', { sequenceNumber: 3, datasetRevision })
+    ).result;
+    expect(atHead).toMatchObject({
+      fromSequence: 3,
+      toSequence: 3,
+      datasetRevision,
+      baselineRequired: false,
+      changedTiles: [],
+      perLayer: [],
+    });
   });
 
   it('(d) pruned and unknown sequence numbers fail with distinct structured errors', async () => {
@@ -302,13 +337,16 @@ describe('live sync over the protocol', () => {
     const head = 3 + DELTA_WINDOW;
 
     // A retained sequence number still round-trips, sparse included.
-    const kept = await rpc('terrain.getDelta', { sequenceNumber: head - 1 });
+    const kept = await rpc('terrain.getDelta', {
+      sequenceNumber: head - 1,
+      datasetRevision,
+    });
     expect(kept.result.sequenceNumber).toBe(head - 1);
     expect(kept.result.sparse).toBeDefined();
 
     // Sequence 0 existed but has been pruned: the error says so and names
     // the remedy (full resync), never claiming the delta was unknown.
-    const pruned = await rpc('terrain.getDelta', { sequenceNumber: 0 });
+    const pruned = await rpc('terrain.getDelta', { sequenceNumber: 0, datasetRevision });
     expect(pruned.error.code).toBe(-32000);
     expect(pruned.error.data.code).toBe('TERRAIN_JOB_NOT_FOUND');
     expect(pruned.error.data.details.reason).toBe('pruned');
@@ -317,7 +355,10 @@ describe('live sync over the protocol', () => {
     expect(pruned.error.message).toMatch(/full resync/);
 
     // A sequence number that never existed is a different failure.
-    const unknown = await rpc('terrain.getDelta', { sequenceNumber: 999_999 });
+    const unknown = await rpc('terrain.getDelta', {
+      sequenceNumber: 999_999,
+      datasetRevision,
+    });
     expect(unknown.error.code).toBe(-32000);
     expect(unknown.error.data.code).toBe('TERRAIN_JOB_NOT_FOUND');
     expect(unknown.error.data.details.reason).toBe('unknown');
@@ -325,7 +366,7 @@ describe('live sync over the protocol', () => {
     expect(unknown.error.data.details.reason).not.toBe(pruned.error.data.details.reason);
 
     // getChangedSince refuses a pruned window the same way.
-    const stale = await rpc('terrain.getChangedSince', { sequenceNumber: 0 });
+    const stale = await rpc('terrain.getChangedSince', { sequenceNumber: 0, datasetRevision });
     expect(stale.error.data.details.reason).toBe('pruned');
     expect(stale.error.message).toMatch(/full resync/);
   });
@@ -355,7 +396,7 @@ describe('live sync over the protocol', () => {
 
     const snap = (await rpc('terrain.snapshot')).result;
     expect(snap.sequenceNumber).toBe(1);
-    expect(snap.directory).toContain('snap-1');
+    expect(snap.directory).toMatch(/snap-r\d+-s1-n\d+$/);
     expect(snap.layers).toHaveLength(1);
     expect(snap.layers[0].layerId).toBe(layerId);
     expect(snap.layers[0].heightSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -373,6 +414,7 @@ describe('live sync over the protocol', () => {
 
     const restore = (await rpc('terrain.restoreSnapshot', { directory: snap.directory })).result;
     expect(restore.restoredLayers).toBe(1);
+    datasetRevision = restore.datasetRevision;
     // The live per-layer checksums now equal the snapshotted ones: bit-exact.
     expect(restore.layers).toEqual([
       {
@@ -386,16 +428,29 @@ describe('live sync over the protocol', () => {
       const [x, z] = probes[i];
       expect(await heightAt(x, z)).toBe(snapshotHeights[i]);
     }
-    // The restore is a new baseline: history reset, sequence numbers restart.
+    // Audit and retained sync history rewind to the snapshot together with
+    // the terrain. Numeric sequence ids may be reused on the new branch, but
+    // the advanced dataset revision keeps their identity unambiguous.
     const log = (await rpc('terrain.getOperationLog')).result;
-    expect(log.operations).toEqual([]);
-    expect(log.deltas).toEqual([]);
-    const atHead = (await rpc('terrain.getChangedSince', { sequenceNumber: 0 })).result;
-    expect(atHead).toEqual({ fromSequence: 0, toSequence: 0, changedTiles: [], perLayer: [] });
+    expect(log.operations).toHaveLength(1);
+    expect(log.operations[0].kind).toBe('lower');
+    expect(log.deltas).toHaveLength(1);
+    expect(log.deltas[0]).toMatchObject({ sequenceNumber: 0, kind: 'lower' });
+    const atHead = (
+      await rpc('terrain.getChangedSince', { sequenceNumber: 1, datasetRevision })
+    ).result;
+    expect(atHead).toMatchObject({
+      fromSequence: 1,
+      toSequence: 1,
+      datasetRevision,
+      baselineRequired: false,
+      changedTiles: [],
+      perLayer: [],
+    });
   });
 
   it('(f) a tampered snapshot is refused with the checksum error and the dataset is unchanged', async () => {
-    // A fresh snapshot of the current (restored) state: snap-0.
+    // A fresh snapshot of the current restored state at head sequence 1.
     const snap = (await rpc('terrain.snapshot')).result;
     const heightFile = resolve(snap.directory, snap.layers[0].heightFile);
 
