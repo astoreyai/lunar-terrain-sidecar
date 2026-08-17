@@ -173,10 +173,13 @@ describe.skipIf(!demAvailable)("interactive UI", () => {
         // Expose navigator.gpu for the (non-authoritative) GPU preview tests.
         // Verified empirically on this machine (Chrome 151 headless): without
         // the flag navigator.gpu is absent entirely; with it, a plain
-        // requestAdapter() still returns null but the SwiftShader fallback
-        // adapter (forceFallbackAdapter: true) yields a working compute
-        // device. '--enable-features=Vulkan' proved unnecessary and would
-        // clobber Playwright's own --enable-features switch.
+        // requestAdapter() returns null (no hardware adapter in headless
+        // mode) and the preview reports itself unavailable — the terminal
+        // state the toggle test asserts. Software (fallback) adapters are
+        // deliberately refused by gpuPreview.ts since 2026-08-17: on a
+        // two-core CI runner SwiftShader pipeline compilation froze the page
+        // and lost the WebGL context. '--enable-features=Vulkan' proved
+        // unnecessary and would clobber Playwright's own --enable-features.
         "--enable-unsafe-webgpu",
       ],
     });

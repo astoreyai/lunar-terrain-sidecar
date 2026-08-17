@@ -282,10 +282,12 @@ interface GpuDevice {
   destroy(): void;
 }
 interface GpuAdapter {
+  /** True for software (SwiftShader-class) adapters, which are refused. */
+  isFallbackAdapter?: boolean;
   requestDevice(): Promise<GpuDevice>;
 }
 interface GpuApi {
-  requestAdapter(options?: { forceFallbackAdapter?: boolean }): Promise<GpuAdapter | null>;
+  requestAdapter(): Promise<GpuAdapter | null>;
 }
 
 // GPUBufferUsage / GPUMapMode numeric values per the WebGPU spec.
@@ -349,18 +351,17 @@ async function initSharedDevice(): Promise<GpuDevice | null> {
     return null;
   }
   try {
-    // A hardware adapter is preferred; the SwiftShader fallback adapter is
-    // accepted because a software preview is still faster than a sidecar
-    // round trip for a ≤512² grid, and authority is unaffected either way.
-    let adapter = await withDeadline(api.requestAdapter(), 'requestAdapter');
-    if (!adapter) {
-      adapter = await withDeadline(
-        api.requestAdapter({ forceFallbackAdapter: true }),
-        'requestAdapter(fallback)',
-      );
-    }
-    if (!adapter) {
-      sharedFailure = 'no WebGPU adapter (hardware or fallback)';
+    // Hardware adapters only. The software fallback adapter (SwiftShader) was
+    // accepted until 2026-08-17; on a two-core CI runner its compute-pipeline
+    // compilation monopolised Chromium's GPU process for minutes, the WebGL
+    // context that three.js was blocked on was lost ("A valid external
+    // Instance reference no longer exists" → CONTEXT_LOST_WEBGL), and the page
+    // main thread froze. A software preview is also not faster than the
+    // sidecar round trip it exists to hide, so "unavailable" is the honest
+    // answer without a hardware adapter; authority is unaffected either way.
+    const adapter = await withDeadline(api.requestAdapter(), 'requestAdapter');
+    if (!adapter || adapter.isFallbackAdapter) {
+      sharedFailure = 'no hardware WebGPU adapter (software adapters are not used)';
       return null;
     }
     return await withDeadline(adapter.requestDevice(), 'requestDevice');
