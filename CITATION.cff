@@ -3,8 +3,16 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "lunar-terrain-sidecar"
 version: 0.2.0
-date-released: 2026-08-14
+date-released: 2026-08-17
 license: MIT
+doi: 10.5281/zenodo.22014046
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22014046
+    description: "Zenodo archive of the v0.2.0 source release"
+  - type: doi
+    value: 10.5281/zenodo.22014045
+    description: "Zenodo concept DOI resolving to the latest version"
 authors:
   - family-names: Storey
     given-names: Aaron W.

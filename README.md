@@ -1,5 +1,8 @@
 # lunar-terrain-sidecar
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22014046.svg)](https://doi.org/10.5281/zenodo.22014046)
+[![CI](https://github.com/astoreyai/lunar-terrain-sidecar/actions/workflows/ci.yml/badge.svg)](https://github.com/astoreyai/lunar-terrain-sidecar/actions/workflows/ci.yml)
+
 Terrain generation, authoring and preprocessing sidecar for a Godot-based lunar
 robotics simulation, focused on the **lunar south pole** with a real solar
 ephemeris.
@@ -362,6 +365,9 @@ measurement. Three outputs are genuinely synthetic and say so in every manifest:
 ## Citing
 
 If you use this software, please cite it via [`CITATION.cff`](CITATION.cff)
+(v0.2.0 archive DOI [10.5281/zenodo.22014046](https://doi.org/10.5281/zenodo.22014046);
+concept DOI [10.5281/zenodo.22014045](https://doi.org/10.5281/zenodo.22014045) always
+resolves to the latest version)
 (Storey, McCardle & Imtiaz, *lunar-terrain-sidecar*, v0.2.0, MIT). A JOSS software paper
 draft is in [`paper/paper.md`](paper/paper.md). Please also credit the data:
 LOLA (Smith et al. 2010), the PGDA polar DEMs (Barker et al. 2021), and JPL
