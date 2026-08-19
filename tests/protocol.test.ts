@@ -503,8 +503,19 @@ describe('sidecar protocol', () => {
       },
       site: { latitudeDeg: -89.4631639, longitudeDeg: -137.4895528 },
     };
-    const first = await rpc('terrain.generate', { config: demConfig });
-    const second = await rpc('terrain.generate', { config: demConfig });
+    // Both frames go out in the SAME tick and are queued on the socket before
+    // the server can start work. Awaiting the first response and only then
+    // sending the second makes the outcome depend on client scheduling: on a
+    // loaded machine this test's process can be descheduled for longer than
+    // the small job takes, the job finishes, and the second request is
+    // legitimately accepted (observed once in a 17-file parallel run).
+    // Pipelining removes that dependence: the server parses request two during
+    // the DEM read's I/O yield, which is inside the running job either way.
+    const inFlight = [
+      rpc('terrain.generate', { config: demConfig }),
+      rpc('terrain.generate', { config: demConfig }),
+    ];
+    const [first, second] = await Promise.all(inFlight);
 
     // Exactly one must be accepted; the other must fail with a structured
     // error naming the running job.
